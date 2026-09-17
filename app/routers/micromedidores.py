@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..schemas import (
     LecturaCreate,
+    LecturaFotoUpdate,
     LecturaOut,
     LecturasPagina,
     MedidorOpcionOut,
@@ -33,6 +34,8 @@ _ESCRITORES = ["admin", "administrativo"]
 # Toma de lecturas: el fontanero solo puede hacer esto (sin CRUD de
 # suscriptores ni medidores, que siguen en _ESCRITORES).
 _TOMADORES_LECTURA = ["admin", "administrativo", "fontanero"]
+# Adjuntar/cambiar evidencia de una lectura YA registrada: SOLO admin.
+_SOLO_ADMIN = ["admin"]
 
 
 # ----------------------------- Suscriptores ----------------------------------
@@ -301,6 +304,33 @@ def crear_lectura(
     # Frenado automático: 3 lecturas iguales seguidas -> frenado;
     # medición distinta a la anterior estando frenado -> vuelve a bueno.
     svc_mm.evaluar_condicion(db, payload.micromedidor_id)
+    db.commit()
+    db.refresh(lectura)
+    return lectura
+
+
+@router.patch(
+    "/lecturas/{lid}",
+    response_model=LecturaOut,
+    summary="Adjuntar o cambiar la evidencia fotográfica de una lectura (solo admin)",
+)
+def actualizar_foto_lectura(
+    lid: int,
+    payload: LecturaFotoUpdate,
+    db: Session = Depends(get_db),
+    usuario: models.Usuario = Depends(require_role(_SOLO_ADMIN)),
+):
+    """Solo se toca `foto_url`: los datos de medición no se modifican.
+
+    foto_url=None quita la evidencia. La URL debe ser la pública de R2
+    devuelta por el flujo firmado /evidencias/presign (misma regla que al
+    crear la lectura). sellar() mantiene la trazabilidad (updated_by).
+    """
+    lectura = db.get(models.Lectura, lid)
+    if not lectura:
+        raise HTTPException(404, "Lectura no encontrada")
+    lectura.foto_url = validar_foto_url(payload.foto_url)
+    sellar(lectura, usuario, nuevo=False)
     db.commit()
     db.refresh(lectura)
     return lectura

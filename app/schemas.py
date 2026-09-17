@@ -353,6 +353,17 @@ class LecturaOut(_ORM):
     foto_url: Optional[str] = None
 
 
+class LecturaFotoUpdate(BaseModel):
+    """Adjuntar/reemplazar/quitar la evidencia de una lectura YA registrada.
+
+    Solo foto: los datos de medición (valor, fecha, consumo) no se tocan.
+    foto_url=None quita la evidencia. La URL se valida contra el bucket
+    público de R2 (misma regla que al crear la lectura).
+    """
+
+    foto_url: Optional[str] = Field(default=None, max_length=500)
+
+
 class SuscriptoresPagina(Paginacion[SuscriptorOut]):
     pass
 
