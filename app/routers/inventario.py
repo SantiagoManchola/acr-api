@@ -3,8 +3,8 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy import or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy import func, or_, select
+from sqlalchemy.orm import Session, aliased
 
 from .. import models
 from ..schemas import (
@@ -12,20 +12,24 @@ from ..schemas import (
     CategoriaCreate,
     CategoriaOut,
     ElementoCreate,
+    ElementoOpcionOut,
     ElementoOut,
+    ElementosPagina,
     ElementoUpdate,
     MovimientoCreate,
     MovimientoOut,
+    MovimientosPagina,
     StockUbicacionOut,
     TipoMovimiento,
     TrasladoCreate,
     TrasladoOut,
+    TrasladosPagina,
     UbicacionCreate,
     UbicacionOut,
     UbicacionUpdate,
 )
 from ..security import get_current_user, get_db, require_role
-from ..services.common import condiciones_busqueda, sellar
+from ..services.common import condiciones_busqueda, sellar, como_pagina, orden_validado
 from ..services import inventario as svc_inventario
 
 router = APIRouter(prefix="/inventario", tags=["Inventario"])
@@ -97,6 +101,16 @@ def _mapa_ubicaciones(db: Session) -> dict:
     return {u.id: u.nombre for u in db.execute(select(models.Ubicacion)).scalars().all()}
 
 
+def _mapa_usuarios(db: Session) -> dict:
+    return {u.id: u.nombre for u in db.execute(select(models.Usuario)).scalars().all()}
+
+
+def _mapa_elementos(db: Session) -> dict:
+    return {e.id: e.nombre for e in db.execute(
+        select(models.ElementoInventario.id, models.ElementoInventario.nombre)
+    ).all()}
+
+
 def _stock_elemento(db: Session, elemento_id: int, ubs: dict):
     rows = db.execute(
         select(models.StockUbicacion).where(models.StockUbicacion.elemento_id == elemento_id)
@@ -161,7 +175,7 @@ def crear_categoria(
 
 
 # ----------------------------- Elementos (lista/crear) -----------------------
-@router.get("", response_model=list[ElementoOut], summary="Listar elementos")
+@router.get("", response_model=ElementosPagina, summary="Listar elementos (paginado)")
 def listar_elementos(
     nombre: str | None = None,
     categoria_id: int | None = None,
@@ -169,6 +183,10 @@ def listar_elementos(
     categoria_nombre: str | None = None,
     ubicacion_id: int | None = None,
     estado: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    orden: str | None = Query(default=None, description="Campo de orden (whitelist del servicio)"),
+    dir_orden: str = Query(default="asc", pattern="^(asc|desc)$"),
     db: Session = Depends(get_db),
     usuario: models.Usuario = Depends(require_role(_LECTORES)),
 ):
@@ -177,9 +195,10 @@ def listar_elementos(
     oficina = _oficina_id(db) if _solo_oficina(usuario) else None
     if _solo_oficina(usuario):
         if oficina is None:
-            return []
+            return como_pagina([], 0, page, page_size)
         ubicacion_id = oficina
     stmt = select(models.ElementoInventario)
+    con_join_cat = False
     if nombre:
         stmt = stmt.where(*condiciones_busqueda(models.ElementoInventario.nombre, nombre))
     if categoria_id:
@@ -189,6 +208,7 @@ def listar_elementos(
             models.CategoriaInventario,
             models.ElementoInventario.categoria_id == models.CategoriaInventario.id,
         )
+        con_join_cat = True
     if categoria_tipo:
         stmt = stmt.where(models.CategoriaInventario.tipo == categoria_tipo)
     if categoria_nombre:
@@ -200,7 +220,34 @@ def listar_elementos(
             models.StockUbicacion,
             models.StockUbicacion.elemento_id == models.ElementoInventario.id,
         ).where(models.StockUbicacion.ubicacion_id == ubicacion_id)
-    elementos = db.execute(stmt.order_by(models.ElementoInventario.nombre)).scalars().all()
+
+    # Orden server-side (whitelist): la cantidad total se calcula post-query,
+    # por eso NO es ordenable aquí (el CMS la marca no-ordenable).
+    permitidos = {
+        "nombre": models.ElementoInventario.nombre,
+        "categoria": models.CategoriaInventario.nombre,
+        "unidad": models.ElementoInventario.unidad,
+        "minimo": models.ElementoInventario.minimo,
+        "valor": models.ElementoInventario.valor,
+        "estado": models.ElementoInventario.estado,
+    }
+    if orden == "categoria" and not con_join_cat:
+        stmt = stmt.join(
+            models.CategoriaInventario,
+            models.ElementoInventario.categoria_id == models.CategoriaInventario.id,
+        )
+        con_join_cat = True
+    por_defecto = lambda s: s.order_by(models.ElementoInventario.nombre)
+    ordenar_fn = orden_validado(
+        orden, dir_orden, permitidos, por_defecto, desempate=models.ElementoInventario.id.asc()
+    )
+
+    total = int(db.execute(
+        select(func.count()).select_from(stmt.order_by(None).subquery())
+    ).scalar_one())
+    elementos = db.execute(
+        ordenar_fn(stmt).limit(page_size).offset((page - 1) * page_size)
+    ).scalars().all()
 
     ubs = _mapa_ubicaciones(db)
     stock_por_elem: dict[int, list] = {}
@@ -219,8 +266,8 @@ def listar_elementos(
             )
             for s in rows
         ]
-        total = sum((Decimal(str(s.cantidad)) for s in rows), Decimal("0"))
-        cantidad = total
+        total_stock = sum((Decimal(str(s.cantidad)) for s in rows), Decimal("0"))
+        cantidad = total_stock
         if ubicacion_id:
             f = next((s for s in stock if s.ubicacion_id == ubicacion_id), None)
             cantidad = f.cantidad if f else Decimal("0")
@@ -231,7 +278,7 @@ def listar_elementos(
                 estado=e.estado, observaciones=e.observaciones, stock=stock,
             )
         )
-    return resultado
+    return como_pagina(resultado, total, page, page_size)
 
 
 @router.post(
@@ -320,13 +367,54 @@ def actualizar_ubicacion(
 
 
 # ----------------------------- Traslados ---------------------------------------
-@router.get("/traslados", response_model=list[TrasladoOut], summary="Listar traslados")
+@router.get(
+    "/opciones",
+    response_model=list[ElementoOpcionOut],
+    summary="Elementos ligeros para selects (con stock resumido)",
+)
+def opciones_elementos(
+    db: Session = Depends(get_db),
+    usuario: models.Usuario = Depends(require_role(_LECTORES)),
+):
+    oficina = _oficina_id(db) if _solo_oficina(usuario) else None
+    ubs = _mapa_ubicaciones(db)
+    stock_por_elem: dict[int, list] = {}
+    for s in db.execute(select(models.StockUbicacion)).scalars().all():
+        stock_por_elem.setdefault(s.elemento_id, []).append(s)
+    resultado = []
+    for e in db.execute(
+        select(models.ElementoInventario).order_by(models.ElementoInventario.nombre)
+    ).scalars().all():
+        rows = stock_por_elem.get(e.id, [])
+        if oficina is not None:
+            rows = [s for s in rows if s.ubicacion_id == oficina]
+        stock = [
+            StockUbicacionOut(
+                id=s.id, elemento_id=s.elemento_id, ubicacion_id=s.ubicacion_id,
+                ubicacion=ubs.get(s.ubicacion_id), cantidad=s.cantidad,
+            )
+            for s in rows
+        ]
+        resultado.append(
+            ElementoOpcionOut(
+                id=e.id, nombre=e.nombre, categoria_id=e.categoria_id,
+                unidad=e.unidad, estado=e.estado, stock=stock,
+            )
+        )
+    return resultado
+
+
+@router.get("/traslados", response_model=TrasladosPagina, summary="Listar traslados (paginado)")
 def listar_traslados(
     elemento_id: int | None = None,
     ubicacion_origen_id: int | None = None,
     ubicacion_destino_id: int | None = None,
     fecha_inicio: str | None = None,
     fecha_fin: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    orden: str | None = Query(default=None, description="Campo de orden (whitelist del servicio)"),
+    dir_orden: str = Query(default="desc", pattern="^(asc|desc)$"),
     db: Session = Depends(get_db),
     usuario: models.Usuario = Depends(require_role(_LECTORES)),
 ):
@@ -335,7 +423,7 @@ def listar_traslados(
     if _solo_oficina(usuario):
         oficina = _oficina_id(db)
         if oficina is None:
-            return []
+            return como_pagina([], 0, page, page_size)
         ubicacion_origen_id = ubicacion_destino_id = None
         stmt = select(models.Traslado).where(
             or_(
@@ -356,22 +444,58 @@ def listar_traslados(
     if fecha_fin:
         stmt = stmt.where(models.Traslado.fecha <= fecha_fin)
     ubs = _mapa_ubicaciones(db)
-    filas = db.execute(
-        stmt.order_by(
-            models.Traslado.fecha.desc(), models.Traslado.hora.desc()
+    usuarios = _mapa_usuarios(db)
+    elementos = _mapa_elementos(db)
+
+    # Orden server-side con alias para origen/destino (misma tabla, dos joins).
+    origen_u = aliased(models.Ubicacion)
+    destino_u = aliased(models.Ubicacion)
+    permitidos = {
+        "fecha": models.Traslado.fecha,
+        "hora": models.Traslado.hora,
+        "elemento": models.ElementoInventario.nombre,
+        "origen": origen_u.nombre,
+        "destino": destino_u.nombre,
+        "cantidad": models.Traslado.cantidad,
+        "responsable": models.Usuario.nombre,
+    }
+    if orden == "elemento":
+        stmt = stmt.join(
+            models.ElementoInventario,
+            models.Traslado.elemento_id == models.ElementoInventario.id,
         )
+    if orden == "origen":
+        stmt = stmt.join(origen_u, models.Traslado.ubicacion_origen_id == origen_u.id)
+    if orden == "destino":
+        stmt = stmt.join(destino_u, models.Traslado.ubicacion_destino_id == destino_u.id)
+    if orden == "responsable":
+        stmt = stmt.join(models.Usuario, models.Traslado.responsable_id == models.Usuario.id)
+    por_defecto = lambda s: s.order_by(
+        models.Traslado.fecha.desc(), models.Traslado.hora.desc(), models.Traslado.id.desc()
+    )
+    ordenar_fn = orden_validado(
+        orden, dir_orden, permitidos, por_defecto, desempate=models.Traslado.id.desc()
+    )
+    total = int(db.execute(
+        select(func.count()).select_from(stmt.order_by(None).subquery())
+    ).scalar_one())
+    filas = db.execute(
+        ordenar_fn(stmt).limit(page_size).offset((page - 1) * page_size)
     ).scalars().all()
-    return [
+    items = [
         TrasladoOut(
             id=t.id, elemento_id=t.elemento_id,
+            elemento_nombre=elementos.get(t.elemento_id),
             ubicacion_origen_id=t.ubicacion_origen_id, ubicacion_destino_id=t.ubicacion_destino_id,
             ubicacion_origen=ubs.get(t.ubicacion_origen_id),
             ubicacion_destino=ubs.get(t.ubicacion_destino_id),
             cantidad=t.cantidad, responsable_id=t.responsable_id,
+            responsable_nombre=usuarios.get(t.responsable_id),
             observaciones=t.observaciones, fecha=t.fecha, hora=t.hora,
         )
         for t in filas
     ]
+    return como_pagina(items, total, page, page_size)
 
 
 @router.post(
@@ -443,13 +567,17 @@ def eliminar_stock(
 
 
 # ----------------------------- Movimientos y alertas (literales) -------------
-@router.get("/movimientos", response_model=list[MovimientoOut], summary="Historial de movimientos")
+@router.get("/movimientos", response_model=MovimientosPagina, summary="Historial de movimientos (paginado)")
 def movimientos(
     elemento_id: int | None = None,
     ubicacion_id: int | None = None,
     tipo: str | None = None,
     fecha_inicio: str | None = None,
     fecha_fin: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    orden: str | None = Query(default=None, description="Campo de orden (whitelist del servicio)"),
+    dir_orden: str = Query(default="desc", pattern="^(asc|desc)$"),
     db: Session = Depends(get_db),
     usuario: models.Usuario = Depends(require_role(_LECTORES)),
 ):
@@ -457,7 +585,7 @@ def movimientos(
     if _solo_oficina(usuario):
         oficina = _oficina_id(db)
         if oficina is None:
-            return []
+            return como_pagina([], 0, page, page_size)
         ubicacion_id = oficina
     stmt = select(models.MovimientoInventario)
     if elemento_id:
@@ -470,21 +598,58 @@ def movimientos(
         stmt = stmt.where(models.MovimientoInventario.fecha >= fecha_inicio)
     if fecha_fin:
         stmt = stmt.where(models.MovimientoInventario.fecha <= fecha_fin)
-    stmt = stmt.order_by(
+
+    # Orden server-side: los campos de nombre requieren su join (1:1, no multiplica filas).
+    permitidos = {
+        "fecha": models.MovimientoInventario.fecha,
+        "hora": models.MovimientoInventario.hora,
+        "elemento": models.ElementoInventario.nombre,
+        "ubicacion": models.Ubicacion.nombre,
+        "tipo": models.MovimientoInventario.tipo,
+        "cantidad": models.MovimientoInventario.cantidad,
+        "motivo": models.MovimientoInventario.motivo,
+    }
+    if orden == "elemento":
+        stmt = stmt.join(
+            models.ElementoInventario,
+            models.MovimientoInventario.elemento_id == models.ElementoInventario.id,
+        )
+    if orden == "ubicacion":
+        stmt = stmt.join(
+            models.Ubicacion,
+            models.MovimientoInventario.ubicacion_id == models.Ubicacion.id,
+        )
+    por_defecto = lambda s: s.order_by(
         models.MovimientoInventario.fecha.desc(),
         models.MovimientoInventario.hora.desc(),
+        models.MovimientoInventario.id.desc(),
     )
+    ordenar_fn = orden_validado(
+        orden, dir_orden, permitidos, por_defecto, desempate=models.MovimientoInventario.id.desc()
+    )
+
     ubs = _mapa_ubicaciones(db)
-    filas = db.execute(stmt).scalars().all()
-    return [
+    usuarios = _mapa_usuarios(db)
+    elementos = _mapa_elementos(db)
+    total = int(db.execute(
+        select(func.count()).select_from(stmt.order_by(None).subquery())
+    ).scalar_one())
+    filas = db.execute(
+        ordenar_fn(stmt).limit(page_size).offset((page - 1) * page_size)
+    ).scalars().all()
+    items = [
         MovimientoOut(
-            id=m.id, elemento_id=m.elemento_id, ubicacion_id=m.ubicacion_id,
+            id=m.id, elemento_id=m.elemento_id,
+            elemento_nombre=elementos.get(m.elemento_id),
+            ubicacion_id=m.ubicacion_id,
             ubicacion=ubs.get(m.ubicacion_id), tipo=m.tipo, cantidad=m.cantidad,
-            responsable_id=m.responsable_id, motivo=m.motivo, observaciones=m.observaciones,
+            responsable_id=m.responsable_id, responsable_nombre=usuarios.get(m.responsable_id),
+            motivo=m.motivo, observaciones=m.observaciones,
             fecha=m.fecha, hora=m.hora,
         )
         for m in filas
     ]
+    return como_pagina(items, total, page, page_size)
 
 
 @router.get("/alertas", response_model=list[AlertaOut], summary="Existencias bajo mínimo")

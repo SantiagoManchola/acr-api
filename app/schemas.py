@@ -1,7 +1,7 @@
 """Esquemas Pydantic v2 para validación de entrada/salida (RNF-06)."""
 from datetime import date, datetime, time
 from decimal import Decimal
-from typing import List, Optional
+from typing import Generic, List, Optional, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
@@ -18,6 +18,20 @@ from .models import (
 # Base común con from_attributes (ORM mode)
 class _ORM(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+
+
+# ----------------------------- Paginación ------------------------------------
+ItemT = TypeVar("ItemT")
+
+
+class Paginacion(BaseModel, Generic[ItemT]):
+    """Sobre estándar de listado paginado server-side."""
+
+    items: List[ItemT]
+    total: int
+    page: int
+    page_size: int
+    pages: int
 
 
 # ----------------------------- Tokens / auth ---------------------------------
@@ -175,12 +189,14 @@ class TrasladoCreate(BaseModel):
 class TrasladoOut(_ORM):
     id: int
     elemento_id: int
+    elemento_nombre: Optional[str] = None
     ubicacion_origen_id: int
     ubicacion_destino_id: int
     ubicacion_origen: Optional[str] = None
     ubicacion_destino: Optional[str] = None
     cantidad: Decimal
     responsable_id: Optional[int] = None
+    responsable_nombre: Optional[str] = None
     observaciones: Optional[str] = None
     fecha: date
     hora: Optional[time] = None
@@ -198,11 +214,13 @@ class MovimientoCreate(BaseModel):
 class MovimientoOut(_ORM):
     id: int
     elemento_id: int
+    elemento_nombre: Optional[str] = None
     ubicacion_id: int
     ubicacion: Optional[str] = None
     tipo: TipoMovimiento
     cantidad: Decimal
     responsable_id: Optional[int] = None
+    responsable_nombre: Optional[str] = None
     motivo: Optional[str] = None
     observaciones: Optional[str] = None
     fecha: date
@@ -296,6 +314,7 @@ class MicromedidorOut(_ORM):
     serial: str
     tipo: Optional[str] = None
     suscriptor_id: Optional[int] = None
+    suscriptor_nombre: Optional[str] = None
     direccion: Optional[str] = None
     fecha_instalacion: Optional[date] = None
     condicion: CondicionMedidor
@@ -321,6 +340,8 @@ class LecturaOut(_ORM):
     id: int
     micromedidor_id: int
     suscriptor_id: int
+    suscriptor_nombre: Optional[str] = None
+    medidor_serial: Optional[str] = None
     fecha: date
     hora: Optional[time] = None
     lectura: Decimal
@@ -330,6 +351,18 @@ class LecturaOut(_ORM):
     novedad: Optional[str] = None
     irregular: bool
     foto_url: Optional[str] = None
+
+
+class SuscriptoresPagina(Paginacion[SuscriptorOut]):
+    pass
+
+
+class MicromedidoresPagina(Paginacion[MicromedidorOut]):
+    pass
+
+
+class LecturasPagina(Paginacion[LecturaOut]):
+    pass
 
 
 # ----------------------------- Planta ----------------------------------------
@@ -375,10 +408,12 @@ class MedicionCreate(BaseModel):
 class MedicionOut(_ORM):
     id: int
     parametro_id: int
+    parametro_nombre: Optional[str] = None
     valor: Decimal
     fecha: date
     hora: Optional[time] = None
     responsable_id: Optional[int] = None
+    responsable_nombre: Optional[str] = None
     fuera_rango: bool
     accion_correctiva: Optional[str] = None
     observaciones: Optional[str] = None
@@ -400,6 +435,7 @@ class DosificacionCreate(BaseModel):
 class DosificacionOut(_ORM):
     id: int
     elemento_id: int
+    elemento_nombre: Optional[str] = None
     cantidad: Decimal
     unidad: Optional[str] = None
     tasa: Optional[Decimal] = None
@@ -407,6 +443,7 @@ class DosificacionOut(_ORM):
     fecha: date
     hora: Optional[time] = None
     responsable_id: Optional[int] = None
+    responsable_nombre: Optional[str] = None
     observaciones: Optional[str] = None
 
 
@@ -454,6 +491,7 @@ class ActividadOut(_ORM):
     fecha: date
     hora: Optional[time] = None
     responsable_id: Optional[int] = None
+    responsable_nombre: Optional[str] = None
     estado: EstadoRegistro
     observaciones: Optional[str] = None
     evidencia: Optional[str] = None
@@ -472,4 +510,135 @@ class HoraServicioOut(_ORM):
     fecha: date
     horas: Decimal
     responsable_id: Optional[int] = None
+    responsable_nombre: Optional[str] = None
     observaciones: Optional[str] = None
+
+
+# ----------------------------- Páginas de listado -----------------------------
+class MedicionesPagina(Paginacion[MedicionOut]):
+    pass
+
+
+class ActividadesPagina(Paginacion[ActividadOut]):
+    pass
+
+
+class DosificacionesPagina(Paginacion[DosificacionOut]):
+    pass
+
+
+class HorasPagina(Paginacion[HoraServicioOut]):
+    pass
+
+
+class ElementosPagina(Paginacion[ElementoOut]):
+    pass
+
+
+class MovimientosPagina(Paginacion[MovimientoOut]):
+    pass
+
+
+class TrasladosPagina(Paginacion[TrasladoOut]):
+    pass
+
+
+class UsuariosPagina(Paginacion[UsuarioOut]):
+    pass
+
+
+# ----------------------------- Opciones para selects --------------------------
+class SuscriptorOpcionOut(BaseModel):
+    id: int
+    nombre: str
+    estado: EstadoRegistro
+
+
+class MedidorOpcionOut(BaseModel):
+    id: int
+    serial: str
+    suscriptor_id: Optional[int] = None
+    estado: EstadoRegistro
+
+
+class ElementoOpcionOut(BaseModel):
+    id: int
+    nombre: str
+    categoria_id: int
+    unidad: Optional[str] = None
+    estado: EstadoRegistro
+    stock: List[StockUbicacionOut] = []
+
+
+class UsuarioOpcionOut(BaseModel):
+    id: int
+    nombre: str
+    estado: EstadoRegistro
+
+
+# ----------------------------- Dashboard --------------------------------------
+class DashboardQuimico(BaseModel):
+    id: int
+    nombre: str
+    unidad: Optional[str] = None
+    cantidad: Decimal
+    minimo: Optional[Decimal] = None
+
+
+class DashboardQuimicosPlanta(BaseModel):
+    total: int
+    bajos: int
+    items: List[DashboardQuimico]
+
+
+class DashboardFrenado(BaseModel):
+    id: int
+    serial: str
+    suscriptor: Optional[str] = None
+    sector: Optional[str] = None
+
+
+class DashboardConsumoMedidor(BaseModel):
+    micromedidor_id: int
+    serial: str
+    suscriptor: Optional[str] = None
+    sector: Optional[str] = None
+    total: Decimal
+    promedio: Optional[Decimal] = None
+    lecturas: int
+
+
+class DashboardConsumo(BaseModel):
+    dias: int
+    desde: date
+    hasta: date
+    total: Decimal
+    promedio: Optional[Decimal] = None
+    lecturas: int
+    por_medidor: List[DashboardConsumoMedidor]
+
+
+class DashboardMicromedidores(BaseModel):
+    suscriptores: int
+    medidores: int
+    frenados_total: int
+    frenados: List[DashboardFrenado]
+    consumo: Optional[DashboardConsumo] = None
+
+
+class DashboardInventario(BaseModel):
+    elementos: int
+    alertas: int
+    solo_oficina: bool
+
+
+class DashboardPlanta(BaseModel):
+    fuera_rango: List[ParametroFueraRangoOut]
+
+
+class DashboardResumen(BaseModel):
+    rol: str
+    inventario: Optional[DashboardInventario] = None
+    quimicos_planta: Optional[DashboardQuimicosPlanta] = None
+    micromedidores: Optional[DashboardMicromedidores] = None
+    planta: Optional[DashboardPlanta] = None

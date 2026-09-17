@@ -166,7 +166,7 @@ def reporte_micromedidores(
     db=Depends(get_db), _=Depends(require_role(_LECTORES_MM)),
 ):
     if tipo == "suscriptores":
-        filas = svc_mm.filtrar_suscriptores(
+        filas, _ = svc_mm.filtrar_suscriptores(
             db, nombre=nombre, identificacion=identificacion, sector=sector, tipo_usuario=tipo_usuario)
         datos = [{"nombre": s.nombre, "codigo_usuario": s.codigo_usuario or "",
                   "codigo_facturacion": s.codigo_facturacion or "",
@@ -178,25 +178,23 @@ def reporte_micromedidores(
         return _responder(datos, columnas, formato, "reporte_suscriptores", "Suscriptores ACR")
 
     if tipo == "micromedidores":
-        filas = svc_mm.filtrar_micromedidores(db, serial=nombre, suscriptor_id=suscriptor_id)
+        filas, _ = svc_mm.filtrar_micromedidores(db, serial=nombre, suscriptor_id=suscriptor_id)
         sus_map = {s.id: s.nombre for s in db.execute(select(models.Suscriptor)).scalars().all()}
-        datos = [{"serial": m.serial, "tipo": m.tipo or "",
-                  "suscriptor": sus_map.get(m.suscriptor_id, "—"),
-                  "direccion": m.direccion or "", "fecha_instalacion": m.fecha_instalacion} for m in filas]
+        datos = [{"serial": m["serial"], "tipo": m["tipo"] or "",
+                  "suscriptor": m["suscriptor_nombre"] or "—",
+                  "direccion": m["direccion"] or "", "fecha_instalacion": m["fecha_instalacion"]} for m in filas]
         columnas = ["serial", "tipo", "suscriptor", "direccion", "fecha_instalacion"]
         return _responder(datos, columnas, formato, "reporte_micromedidores", "Micromedidores ACR")
 
     # lecturas (consumo)
-    filas = svc_mm.filtrar_lecturas(db, micromedidor_id=micromedidor_id, suscriptor_id=suscriptor_id,
-                                    sector=sector, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
-    sus_map = {s.id: s.nombre for s in db.execute(select(models.Suscriptor)).scalars().all()}
-    med_map = {m.id: m.serial for m in db.execute(select(models.Micromedidor)).scalars().all()}
-    datos = [{"fecha": l.fecha, "hora": l.hora,
-              "suscriptor": sus_map.get(l.suscriptor_id, l.suscriptor_id),
-              "medidor": med_map.get(l.micromedidor_id, l.micromedidor_id),
-              "lectura": l.lectura, "consumo": l.consumo,
-              "promedio_usado": l.promedio_usado, "irregular": l.irregular, "novedad": l.novedad or "",
-              "foto_url": l.foto_url or ""}
+    filas, _ = svc_mm.filtrar_lecturas(db, micromedidor_id=micromedidor_id, suscriptor_id=suscriptor_id,
+                                       sector=sector, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
+    datos = [{"fecha": l["fecha"], "hora": l["hora"],
+              "suscriptor": l["suscriptor_nombre"] or l["suscriptor_id"],
+              "medidor": l["medidor_serial"] or l["micromedidor_id"],
+              "lectura": l["lectura"], "consumo": l["consumo"],
+              "promedio_usado": l["promedio_usado"], "irregular": l["irregular"], "novedad": l["novedad"] or "",
+              "foto_url": l["foto_url"] or ""}
              for l in filas]
     columnas = ["fecha", "hora", "suscriptor", "medidor", "lectura", "consumo", "promedio_usado", "irregular", "novedad", "foto_url"]
     return _responder(datos, columnas, formato, "reporte_consumo", "Consumo micromedidores ACR")
@@ -233,40 +231,36 @@ def reporte_planta(
         return _responder(datos, columnas, formato, "reporte_insumos_planta", "Insumos/Químicos Planta ACR")
 
     if tipo == "actividades":
-        filas = svc_planta.filtrar_actividades(db, tipo=None, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
-        usuario_map = {u.id: u.nombre for u in db.execute(select(models.Usuario)).scalars().all()}
-        datos = [{"tipo": a.tipo, "fecha": a.fecha, "hora": a.hora,
-                  "responsable": usuario_map.get(a.responsable_id, "—"),
-                  "observaciones": a.observaciones or "", "foto_url": a.foto_url or ""} for a in filas]
+        filas, _ = svc_planta.filtrar_actividades(db, tipo=None, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
+        datos = [{"tipo": a["tipo"], "fecha": a["fecha"], "hora": a["hora"],
+                  "responsable": a["responsable_nombre"] or "—",
+                  "observaciones": a["observaciones"] or "", "foto_url": a["foto_url"] or ""} for a in filas]
         columnas = ["tipo", "fecha", "hora", "responsable", "observaciones", "foto_url"]
         return _responder(datos, columnas, formato, "reporte_actividades", "Actividades Planta ACR")
 
     if tipo == "dosificaciones":
-        filas = svc_planta.filtrar_dosificaciones(db, elemento_id=elemento_id, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
-        elem_map = {e.id: e.nombre for e in db.execute(select(models.ElementoInventario)).scalars().all()}
-        datos = [{"fecha": d.fecha, "hora": d.hora,
-                  "insumo": elem_map.get(d.elemento_id, d.elemento_id),
-                  "cantidad": d.cantidad, "unidad": d.unidad or "",
-                  "tasa": d.tasa, "unidad_tasa": d.unidad_tasa or "",
-                  "observaciones": d.observaciones or ""} for d in filas]
+        filas, _ = svc_planta.filtrar_dosificaciones(db, elemento_id=elemento_id, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
+        datos = [{"fecha": d["fecha"], "hora": d["hora"],
+                  "insumo": d["elemento_nombre"] or d["elemento_id"],
+                  "cantidad": d["cantidad"], "unidad": d["unidad"] or "",
+                  "tasa": d["tasa"], "unidad_tasa": d["unidad_tasa"] or "",
+                  "observaciones": d["observaciones"] or ""} for d in filas]
         columnas = ["fecha", "hora", "insumo", "cantidad", "unidad", "tasa", "unidad_tasa", "observaciones"]
         return _responder(datos, columnas, formato, "reporte_dosificaciones", "Dosificaciones ACR")
 
     if tipo == "horas":
-        filas = svc_planta.filtrar_horas(db, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
-        usuario_map = {u.id: u.nombre for u in db.execute(select(models.Usuario)).scalars().all()}
-        datos = [{"fecha": h.fecha, "horas": h.horas,
-                  "responsable": usuario_map.get(h.responsable_id, "—"),
-                  "observaciones": h.observaciones or ""} for h in filas]
+        filas, _ = svc_planta.filtrar_horas(db, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
+        datos = [{"fecha": h["fecha"], "horas": h["horas"],
+                  "responsable": h["responsable_nombre"] or "—",
+                  "observaciones": h["observaciones"] or ""} for h in filas]
         columnas = ["fecha", "horas", "responsable", "observaciones"]
         return _responder(datos, columnas, formato, "reporte_horas", "Horas de servicio ACR")
 
     # mediciones (por defecto)
-    filas = svc_planta.filtrar_mediciones(db, parametro_id=parametro_id, fuera_rango=fuera_rango,
-                                          fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
-    param_map = {p.id: p.nombre for p in db.execute(select(models.ParametroPlanta)).scalars().all()}
-    datos = [{"fecha": m.fecha, "hora": m.hora, "parametro": param_map.get(m.parametro_id, m.parametro_id),
-              "valor": m.valor, "fuera_rango": m.fuera_rango,
-              "accion_correctiva": m.accion_correctiva or "", "foto_url": m.foto_url or ""} for m in filas]
+    filas, _ = svc_planta.filtrar_mediciones(db, parametro_id=parametro_id, fuera_rango=fuera_rango,
+                                             fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
+    datos = [{"fecha": m["fecha"], "hora": m["hora"], "parametro": m["parametro_nombre"] or m["parametro_id"],
+              "valor": m["valor"], "fuera_rango": m["fuera_rango"],
+              "accion_correctiva": m["accion_correctiva"] or "", "foto_url": m["foto_url"] or ""} for m in filas]
     columnas = ["fecha", "hora", "parametro", "valor", "fuera_rango", "accion_correctiva", "foto_url"]
     return _responder(datos, columnas, formato, "reporte_planta", "Planta de tratamiento ACR")

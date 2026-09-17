@@ -10,15 +10,20 @@ from .. import models
 from ..schemas import (
     LecturaCreate,
     LecturaOut,
+    LecturasPagina,
+    MedidorOpcionOut,
     MicromedidorCreate,
     MicromedidorOut,
+    MicromedidoresPagina,
     MicromedidorUpdate,
     SuscriptorCreate,
+    SuscriptorOpcionOut,
     SuscriptorOut,
+    SuscriptoresPagina,
     SuscriptorUpdate,
 )
 from ..security import get_current_user, get_db, require_role
-from ..services.common import sellar, validar_foto_url
+from ..services.common import sellar, validar_foto_url, como_pagina
 from ..services import micromedidores as svc_mm
 
 router = APIRouter(prefix="", tags=["Micromedidores"])
@@ -31,19 +36,36 @@ _TOMADORES_LECTURA = ["admin", "administrativo", "fontanero"]
 
 
 # ----------------------------- Suscriptores ----------------------------------
-@router.get("/suscriptores", response_model=list[SuscriptorOut], summary="Listar suscriptores")
+@router.get("/suscriptores", response_model=SuscriptoresPagina, summary="Listar suscriptores (paginado)")
 def listar_suscriptores(
     nombre: str | None = None,
     identificacion: str | None = None,
     sector: str | None = None,
     tipo_usuario: str | None = None,
     con_medidor: bool | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    orden: str | None = Query(default=None, description="Campo de orden (whitelist del servicio)"),
+    dir_orden: str = Query(default="asc", pattern="^(asc|desc)$"),
     db: Session = Depends(get_db), _: models.Usuario = Depends(require_role(_LECTORES))
 ):
-    return svc_mm.filtrar_suscriptores(
+    items, total = svc_mm.filtrar_suscriptores(
         db, nombre=nombre, identificacion=identificacion, sector=sector,
         tipo_usuario=tipo_usuario, con_medidor=con_medidor,
+        page=page, page_size=page_size, orden=orden, dir_orden=dir_orden,
     )
+    return como_pagina(items, total, page, page_size)
+
+
+@router.get(
+    "/suscriptores/opciones",
+    response_model=list[SuscriptorOpcionOut],
+    summary="Suscriptores ligeros para selects/filtros",
+)
+def opciones_suscriptores(
+    db: Session = Depends(get_db), _: models.Usuario = Depends(require_role(_LECTORES))
+):
+    return svc_mm.opciones_suscriptores(db)
 
 
 @router.get("/suscriptores/sectores", response_model=list[str], summary="Sectores disponibles")
@@ -127,18 +149,36 @@ def eliminar_suscriptor(
 
 
 # ----------------------------- Micromedidores --------------------------------
-@router.get("/micromedidores", response_model=list[MicromedidorOut], summary="Listar micromedidores")
+@router.get("/micromedidores", response_model=MicromedidoresPagina, summary="Listar micromedidores (paginado)")
 def listar_micromedidores(
     serial: str | None = None,
     suscriptor_id: int | None = None,
     estado: str | None = None,
     condicion: str | None = None,
     sector: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    orden: str | None = Query(default=None, description="Campo de orden (whitelist del servicio)"),
+    dir_orden: str = Query(default="asc", pattern="^(asc|desc)$"),
     db: Session = Depends(get_db), _: models.Usuario = Depends(require_role(_LECTORES))
 ):
-    return svc_mm.filtrar_micromedidores(
-        db, serial=serial, suscriptor_id=suscriptor_id, estado=estado, sector=sector, condicion=condicion
+    items, total = svc_mm.filtrar_micromedidores(
+        db, serial=serial, suscriptor_id=suscriptor_id, estado=estado,
+        sector=sector, condicion=condicion,
+        page=page, page_size=page_size, orden=orden, dir_orden=dir_orden,
     )
+    return como_pagina(items, total, page, page_size)
+
+
+@router.get(
+    "/micromedidores/opciones",
+    response_model=list[MedidorOpcionOut],
+    summary="Micromedidores ligeros para selects/filtros",
+)
+def opciones_micromedidores(
+    db: Session = Depends(get_db), _: models.Usuario = Depends(require_role(_LECTORES))
+):
+    return svc_mm.opciones_micromedidores(db)
 
 
 @router.post(
@@ -266,20 +306,26 @@ def crear_lectura(
     return lectura
 
 
-@router.get("/lecturas", response_model=list[LecturaOut], summary="Consultar lecturas")
+@router.get("/lecturas", response_model=LecturasPagina, summary="Consultar lecturas (paginado)")
 def listar_lecturas(
     micromedidor_id: int | None = None,
     suscriptor_id: int | None = None,
     sector: str | None = None,
     fecha_inicio: date | None = None,
     fecha_fin: date | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    orden: str | None = Query(default=None, description="Campo de orden (whitelist del servicio)"),
+    dir_orden: str = Query(default="desc", pattern="^(asc|desc)$"),
     db: Session = Depends(get_db),
     _: models.Usuario = Depends(require_role(_LECTORES)),
 ):
-    return svc_mm.filtrar_lecturas(
+    items, total = svc_mm.filtrar_lecturas(
         db, micromedidor_id=micromedidor_id, suscriptor_id=suscriptor_id,
         sector=sector, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin,
+        page=page, page_size=page_size, orden=orden, dir_orden=dir_orden,
     )
+    return como_pagina(items, total, page, page_size)
 
 
 @router.get(

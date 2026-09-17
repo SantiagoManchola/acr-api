@@ -1,6 +1,6 @@
 """Router de usuarios y roles (RF-01..RF-05)."""
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
 from .. import models
@@ -9,11 +9,13 @@ from ..schemas import (
     RolCreate,
     RolOut,
     UsuarioCreate,
+    UsuarioOpcionOut,
     UsuarioOut,
+    UsuariosPagina,
     UsuarioUpdate,
 )
 from ..security import get_current_user, get_db, hash_password, require_role
-from ..services.common import sellar
+from ..services.common import sellar, como_pagina, orden_validado
 
 router = APIRouter(prefix="/usuarios", tags=["Usuarios y roles"])
 
@@ -56,19 +58,58 @@ def _cargar(db, usuario_id):
     ).scalars().unique().one_or_none()
 
 
-@router.get("", response_model=list[UsuarioOut], summary="Listar usuarios")
+@router.get("", response_model=UsuariosPagina, summary="Listar usuarios (paginado)")
 def listar_usuarios(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    orden: str | None = Query(default=None, description="Campo de orden (whitelist del servicio)"),
+    dir_orden: str = Query(default="asc", pattern="^(asc|desc)$"),
     db: Session = Depends(get_db),
     _: models.Usuario = Depends(require_role(["admin", "administrativo"])),
 ):
-    return (
+    stmt = select(models.Usuario).options(joinedload(models.Usuario.rol))
+    permitidos = {
+        "nombre": models.Usuario.nombre,
+        "username": models.Usuario.username,
+        "identificacion": models.Usuario.identificacion,
+        "estado": models.Usuario.estado,
+        "ultimo_acceso": models.Usuario.ultimo_acceso,
+        "rol": models.Rol.nombre,
+    }
+    if orden == "rol":
+        # 1:1 por FK: el join no multiplica filas; joinedload usa alias propio.
+        stmt = stmt.join(models.Rol, models.Usuario.rol_id == models.Rol.id)
+    por_defecto = lambda s: s.order_by(models.Usuario.nombre)
+    ordenar_fn = orden_validado(
+        orden, dir_orden, permitidos, por_defecto, desempate=models.Usuario.id.asc()
+    )
+    total = int(db.execute(
+        select(func.count()).select_from(models.Usuario)
+    ).scalar_one())
+    filas = (
         db.execute(
-            select(models.Usuario).options(joinedload(models.Usuario.rol))
+            ordenar_fn(stmt).limit(page_size).offset((page - 1) * page_size)
         )
         .scalars()
         .unique()
         .all()
     )
+    return como_pagina(filas, total, page, page_size)
+
+
+@router.get(
+    "/opciones",
+    response_model=list[UsuarioOpcionOut],
+    summary="Usuarios ligeros para selects (responsables)",
+)
+def opciones_usuarios(
+    db: Session = Depends(get_db),
+    _: models.Usuario = Depends(require_role(["admin", "administrativo", "operario"])),
+):
+    return db.execute(
+        select(models.Usuario.id, models.Usuario.nombre, models.Usuario.estado)
+        .order_by(models.Usuario.nombre)
+    ).all()
 
 
 @router.post(

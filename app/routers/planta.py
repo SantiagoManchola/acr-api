@@ -9,12 +9,16 @@ from ..schemas import (
     ActividadCreate,
     ActividadOut,
     ActividadUpdate,
+    ActividadesPagina,
     DosificacionCreate,
     DosificacionOut,
+    DosificacionesPagina,
     HoraServicioCreate,
     HoraServicioOut,
+    HorasPagina,
     MedicionCreate,
     MedicionOut,
+    MedicionesPagina,
     ParametroCreate,
     ParametroFueraRangoOut,
     ParametroOut,
@@ -22,7 +26,7 @@ from ..schemas import (
     TipoMovimiento,
 )
 from ..security import get_current_user, get_db, require_role
-from ..services.common import sellar, validar_foto_url
+from ..services.common import sellar, validar_foto_url, como_pagina
 from ..services import planta as svc_planta
 
 router = APIRouter(prefix="/planta", tags=["Planta de tratamiento"])
@@ -112,18 +116,24 @@ def crear_medicion(
     return med
 
 
-@router.get("/mediciones", response_model=list[MedicionOut], summary="Listar mediciones")
+@router.get("/mediciones", response_model=MedicionesPagina, summary="Listar mediciones (paginado)")
 def listar_mediciones(
     parametro_id: int | None = None,
     fuera_rango: bool | None = None,
     fecha_inicio: date | None = None,
     fecha_fin: date | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    orden: str | None = Query(default=None, description="Campo de orden (whitelist del servicio)"),
+    dir_orden: str = Query(default="desc", pattern="^(asc|desc)$"),
     db: Session = Depends(get_db), _: models.Usuario = Depends(require_role(_LECTORES))
 ):
-    return svc_planta.filtrar_mediciones(
+    items, total = svc_planta.filtrar_mediciones(
         db, parametro_id=parametro_id, fuera_rango=fuera_rango,
         fecha_inicio=fecha_inicio, fecha_fin=fecha_fin,
+        page=page, page_size=page_size, orden=orden, dir_orden=dir_orden,
     )
+    return como_pagina(items, total, page, page_size)
 
 
 @router.get(
@@ -197,16 +207,22 @@ def crear_dosificacion(
     return d
 
 
-@router.get("/dosificaciones", response_model=list[DosificacionOut], summary="Listar dosificaciones")
+@router.get("/dosificaciones", response_model=DosificacionesPagina, summary="Listar dosificaciones (paginado)")
 def listar_dosificaciones(
     elemento_id: int | None = None,
     fecha_inicio: date | None = None,
     fecha_fin: date | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    orden: str | None = Query(default=None, description="Campo de orden (whitelist del servicio)"),
+    dir_orden: str = Query(default="desc", pattern="^(asc|desc)$"),
     db: Session = Depends(get_db), _: models.Usuario = Depends(require_role(_LECTORES))
 ):
-    return svc_planta.filtrar_dosificaciones(
-        db, elemento_id=elemento_id, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin
+    items, total = svc_planta.filtrar_dosificaciones(
+        db, elemento_id=elemento_id, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin,
+        page=page, page_size=page_size, orden=orden, dir_orden=dir_orden,
     )
+    return como_pagina(items, total, page, page_size)
 
 
 # ----------------------------- Actividades -----------------------------------
@@ -238,16 +254,22 @@ def crear_actividad(
     return a
 
 
-@router.get("/actividades", response_model=list[ActividadOut], summary="Listar actividades de planta")
+@router.get("/actividades", response_model=ActividadesPagina, summary="Listar actividades de planta (paginado)")
 def listar_actividades(
     tipo: str | None = None,
     fecha_inicio: date | None = None,
     fecha_fin: date | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    orden: str | None = Query(default=None, description="Campo de orden (whitelist del servicio)"),
+    dir_orden: str = Query(default="desc", pattern="^(asc|desc)$"),
     db: Session = Depends(get_db), _: models.Usuario = Depends(require_role(_LECTORES))
 ):
-    return svc_planta.filtrar_actividades(
-        db, tipo=tipo, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin
+    items, total = svc_planta.filtrar_actividades(
+        db, tipo=tipo, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin,
+        page=page, page_size=page_size, orden=orden, dir_orden=dir_orden,
     )
+    return como_pagina(items, total, page, page_size)
 
 
 @router.patch("/actividades/{aid}", response_model=ActividadOut, summary="Actualizar actividad")
@@ -296,10 +318,22 @@ def crear_horas(
     return h
 
 
-@router.get("/horas-servicio", response_model=list[HoraServicioOut], summary="Listar horas de servicio")
+@router.get("/horas-servicio", response_model=HorasPagina | list[HoraServicioOut], summary="Listar horas de servicio (paginado opt-in)")
 def listar_horas(
     fecha_inicio: date | None = None,
     fecha_fin: date | None = None,
+    # Paginación opt-in: el gráfico anual (GraficoHoras) pide el rango completo
+    # sin `page`; la tabla del CMS envía page/page_size.
+    page: int | None = Query(default=None, ge=1),
+    page_size: int = Query(default=20, ge=1, le=366),
+    orden: str | None = Query(default=None, description="Campo de orden (whitelist del servicio)"),
+    dir_orden: str = Query(default="desc", pattern="^(asc|desc)$"),
     db: Session = Depends(get_db), _: models.Usuario = Depends(require_role(_LECTORES))
 ):
-    return svc_planta.filtrar_horas(db, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
+    items, total = svc_planta.filtrar_horas(
+        db, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin,
+        page=page, page_size=page_size, orden=orden, dir_orden=dir_orden,
+    )
+    if page is None:
+        return items
+    return como_pagina(items, total, page, page_size)
