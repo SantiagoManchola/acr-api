@@ -3,7 +3,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import models
@@ -232,8 +232,21 @@ def actualizar_micromedidor(
     mm = db.get(models.Micromedidor, mid)
     if not mm:
         raise HTTPException(404, "Micromedidor no encontrado")
+    condicion_anterior = mm.condicion
     for k, v in payload.model_dump(exclude_unset=True).items():
         setattr(mm, k, v)
+    # Corte de frenado: al marcar manualmente el medidor como 'bueno' se guarda
+    # el id de su última lectura; la detección automática solo contará lecturas
+    # posteriores, exigiendo 3 mediciones NUEVAS antes de reportarlo frenado.
+    if (
+        mm.condicion == models.CondicionMedidor.bueno
+        and condicion_anterior != models.CondicionMedidor.bueno
+    ):
+        mm.condicion_reset_lectura_id = db.execute(
+            select(func.max(models.Lectura.id)).where(
+                models.Lectura.micromedidor_id == mm.id
+            )
+        ).scalar()
     sellar(mm, usuario, nuevo=False)
     db.commit()
     db.refresh(mm)

@@ -270,6 +270,11 @@ class Micromedidor(Base):
         nullable=False,
         server_default=CondicionMedidor.bueno.value,
     )
+    # Corte de lecturas para la detección de frenado: al marcar manualmente un
+    # medidor como 'bueno' se guarda el id de su última lectura; el frenado
+    # automático solo vuelve a contar las lecturas posteriores a ese corte
+    # (se requieren 3 mediciones nuevas iguales para volver a reportarlo).
+    condicion_reset_lectura_id = Column(Integer)
     estado = Column(_estado(), nullable=False, server_default=EstadoRegistro.activo.value)
     created_by = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"))
     updated_by = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"))

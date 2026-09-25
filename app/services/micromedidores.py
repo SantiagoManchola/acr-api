@@ -156,15 +156,24 @@ def evaluar_condicion(db: Session, micromedidor_id: int):
     el contador está frenado (no registra paso de agua). El aviso permanece
     hasta que llegue una medición distinta a la anterior, momento en el que el
     medidor vuelve a 'bueno'. 'defectuoso' (se marca) lo fija el operario.
+
+    Corte por marcado manual: si el operario marca un medidor como 'bueno'
+    (por ejemplo, tras destrabarlo), la detección solo cuenta las lecturas
+    POSTERIORES a ese momento (`condicion_reset_lectura_id`), de modo que se
+    requieren 3 mediciones NUEVAS iguales para reportarlo frenado otra vez y no
+    se reutilizan las lecturas que originaron el aviso anterior.
     """
     mm = db.get(models.Micromedidor, micromedidor_id)
     if mm is None:
         return None
+
+    stmt = select(models.Lectura).where(
+        models.Lectura.micromedidor_id == micromedidor_id
+    )
+    if mm.condicion_reset_lectura_id:
+        stmt = stmt.where(models.Lectura.id > mm.condicion_reset_lectura_id)
     ultimas = db.execute(
-        select(models.Lectura)
-        .where(models.Lectura.micromedidor_id == micromedidor_id)
-        .order_by(models.Lectura.fecha.desc(), models.Lectura.id.desc())
-        .limit(3)
+        stmt.order_by(models.Lectura.fecha.desc(), models.Lectura.id.desc()).limit(3)
     ).scalars().all()
 
     # 3 lecturas consecutivas con el mismo valor -> frenado

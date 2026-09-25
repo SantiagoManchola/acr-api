@@ -156,12 +156,16 @@ def reporte_micromedidores(
     tipo: str = Query(default="lecturas"),
     nombre: str | None = None,
     identificacion: str | None = None,
+    serial: str | None = None,
+    condicion: str | None = None,
     sector: str | None = None,
     tipo_usuario: str | None = None,
     micromedidor_id: int | None = None,
     suscriptor_id: int | None = None,
     fecha_inicio: str | None = None,
     fecha_fin: str | None = None,
+    orden: str = Query(default="suscriptor"),
+    dir_orden: str = Query(default="desc"),
     formato: str = Query(default="csv"),
     db=Depends(get_db), _=Depends(require_role(_LECTORES_MM)),
 ):
@@ -178,12 +182,22 @@ def reporte_micromedidores(
         return _responder(datos, columnas, formato, "reporte_suscriptores", "Suscriptores ACR")
 
     if tipo == "micromedidores":
-        filas, _ = svc_mm.filtrar_micromedidores(db, serial=nombre, suscriptor_id=suscriptor_id)
-        sus_map = {s.id: s.nombre for s in db.execute(select(models.Suscriptor)).scalars().all()}
-        datos = [{"serial": m["serial"], "tipo": m["tipo"] or "",
-                  "suscriptor": m["suscriptor_nombre"] or "—",
-                  "direccion": m["direccion"] or "", "fecha_instalacion": m["fecha_instalacion"]} for m in filas]
-        columnas = ["serial", "tipo", "suscriptor", "direccion", "fecha_instalacion"]
+        # Orden configurable para imprimir: por suscriptor (medidores de un
+        # mismo suscriptor agrupados) o por serial, en asc/desc.
+        if orden not in ("suscriptor", "serial"):
+            raise HTTPException(400, "orden debe ser 'suscriptor' o 'serial'")
+        if (dir_orden or "").lower() not in ("asc", "desc"):
+            raise HTTPException(400, "dir_orden debe ser 'asc' o 'desc'")
+        filas, _ = svc_mm.filtrar_micromedidores(
+            db, serial=serial or nombre, sector=sector, condicion=condicion,
+            suscriptor_id=suscriptor_id, orden=orden, dir_orden=dir_orden,
+        )
+        datos = [{"suscriptor": m["suscriptor_nombre"] or "—",
+                  "serial": m["serial"], "condicion": m["condicion"],
+                  "tipo": m["tipo"] or "", "direccion": m["direccion"] or "",
+                  "fecha_instalacion": m["fecha_instalacion"]} for m in filas]
+        columnas = ["suscriptor", "serial", "condicion", "tipo",
+                    "direccion", "fecha_instalacion"]
         return _responder(datos, columnas, formato, "reporte_micromedidores", "Micromedidores ACR")
 
     # lecturas (consumo)

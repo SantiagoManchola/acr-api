@@ -85,6 +85,7 @@ ETIQUETAS = {
     "minimo": "Mínimo",
     "valor": "Valor",
     "estado": "Estado",
+    "condicion": "Condición",
     "parametro": "Parámetro",
     "fuera_rango": "Fuera de rango",
     "accion_correctiva": "Acción correctiva",
