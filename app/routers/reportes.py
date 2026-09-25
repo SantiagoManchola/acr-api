@@ -165,7 +165,7 @@ def reporte_micromedidores(
     fecha_inicio: str | None = None,
     fecha_fin: str | None = None,
     orden: str = Query(default="suscriptor"),
-    dir_orden: str = Query(default="desc"),
+    dir_orden: str = Query(default="asc"),
     formato: str = Query(default="csv"),
     db=Depends(get_db), _=Depends(require_role(_LECTORES_MM)),
 ):
