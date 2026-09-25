@@ -234,14 +234,22 @@ def filtrar_micromedidores(db: Session, *, serial=None, suscriptor_id=None, esta
 
 
 def opciones_micromedidores(db: Session):
-    """Lista ligera {id, serial, suscriptor_id, estado} para selects del CMS."""
+    """Lista ligera para selects y para el buscador único del fontanero.
+
+    Incluye el nombre del suscriptor y la dirección: el buscador permite
+    encontrar el medidor por nombre, dirección o serial en un solo campo.
+    """
     return db.execute(
         select(
             models.Micromedidor.id,
             models.Micromedidor.serial,
             models.Micromedidor.suscriptor_id,
+            models.Suscriptor.nombre.label("suscriptor_nombre"),
+            models.Micromedidor.direccion,
             models.Micromedidor.estado,
-        ).order_by(models.Micromedidor.serial)
+        )
+        .outerjoin(models.Suscriptor, models.Micromedidor.suscriptor_id == models.Suscriptor.id)
+        .order_by(models.Suscriptor.nombre, models.Micromedidor.serial)
     ).all()
 
 

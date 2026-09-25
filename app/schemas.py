@@ -569,6 +569,8 @@ class MedidorOpcionOut(BaseModel):
     id: int
     serial: str
     suscriptor_id: Optional[int] = None
+    suscriptor_nombre: Optional[str] = None
+    direccion: Optional[str] = None
     estado: EstadoRegistro
 
 
