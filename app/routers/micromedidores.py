@@ -34,8 +34,9 @@ _ESCRITORES = ["admin", "administrativo"]
 # Toma de lecturas: el fontanero solo puede hacer esto (sin CRUD de
 # suscriptores ni medidores, que siguen en _ESCRITORES).
 _TOMADORES_LECTURA = ["admin", "administrativo", "fontanero"]
-# Adjuntar/cambiar evidencia de una lectura YA registrada: SOLO admin.
-_SOLO_ADMIN = ["admin"]
+# Adjuntar/cambiar evidencia de una lectura YA registrada:
+# superadministrador (admin) y administrativo.
+_FOTO_LECTURA = ["admin", "administrativo"]
 # Eliminar lecturas tomadas: superadministrador (admin) y administrativo.
 _ELIMINAN_LECTURA = ["admin", "administrativo"]
 
@@ -335,13 +336,13 @@ def crear_lectura(
 @router.patch(
     "/lecturas/{lid}",
     response_model=LecturaOut,
-    summary="Adjuntar o cambiar la evidencia fotográfica de una lectura (solo admin)",
+    summary="Adjuntar o cambiar la evidencia fotográfica de una lectura (admin/administrativo)",
 )
 def actualizar_foto_lectura(
     lid: int,
     payload: LecturaFotoUpdate,
     db: Session = Depends(get_db),
-    usuario: models.Usuario = Depends(require_role(_SOLO_ADMIN)),
+    usuario: models.Usuario = Depends(require_role(_FOTO_LECTURA)),
 ):
     """Solo se toca `foto_url`: los datos de medición no se modifican.
 
