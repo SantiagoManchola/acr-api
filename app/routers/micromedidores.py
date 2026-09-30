@@ -300,6 +300,11 @@ def crear_lectura(
     # Fecha/hora por defecto en hora de Colombia (UTC-5): si el servidor está
     # en UTC no se deben registrar lecturas con fecha/hora desfasada.
     fecha_lectura = payload.fecha or hoy_colombia()
+    # Validación anti-duplicados/errores (misma fecha, valor menor que el
+    # anterior): el valor igual al anterior se confirma en el CMS, no aquí.
+    svc_mm.validar_lectura_nueva(
+        db, payload.micromedidor_id, fecha_lectura, payload.lectura, estimada
+    )
     valor, consumo, promedio_usado = svc_mm.resolver_lectura(
         db, payload.micromedidor_id, payload.lectura, fecha_lectura, estimada
     )

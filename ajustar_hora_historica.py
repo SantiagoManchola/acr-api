@@ -1,7 +1,7 @@
 """Ajuste ÚNICO de histórico: el sistema guardaba hora UTC (servidor en UTC-0).
 
 Desde el cambio de zona horaria, la API escribe y muestra hora de COLOMBIA
-(UTC-5). Este script ADELANTA +5 HORAS las fechas/horas de auditoría ya
+(UTC-5). Este script ATRASA 5 HORAS las fechas/horas de auditoría ya
 guardadas en UTC para que queden en hora colombiana:
 
 - `created_at` y `updated_at` de TODAS las tablas
@@ -23,8 +23,11 @@ from sqlalchemy import text
 from app import models
 from app.db import engine
 
-# Colombia es UTC-5 fijo (sin horario de verano): UTC -> Colombia = +5 horas.
+# Colombia es UTC-5 fijo (sin horario de verano): UTC -> Colombia = -5 horas.
 HORAS = 5
+# Nota: este ajuste YA FUE APLICADO a la base de producción (Aiven) el
+# 2026-09-30, incluyendo la corrección de hora de negocio de lecturas,
+# mediciones y movimientos generadas en vivo. NO volver a ejecutarlo.
 
 # Columnas de auditoría presentes en todas las tablas + la de último acceso.
 COLUMNAS_AUDITORIA = ("created_at", "updated_at")
@@ -61,7 +64,7 @@ def main() -> None:
                 if ejecutar:
                     conn.execute(
                         text(
-                            f"UPDATE `{tabla}` SET `{col}` = `{col}` + INTERVAL {HORAS} HOUR"
+                            f"UPDATE `{tabla}` SET `{col}` = `{col}` - INTERVAL {HORAS} HOUR"
                         )
                     )
         if ejecutar:

@@ -103,6 +103,61 @@ def resolver_lectura(
     return _entero(lectura), None, False
 
 
+def validar_lectura_nueva(
+    db: Session,
+    micromedidor_id: int,
+    fecha,
+    valor: Decimal | None = None,
+    estimada: bool = False,
+) -> None:
+    """Evita registros duplicados/erróneos ANTES de guardar una lectura.
+
+    - MISMA FECHA: si el medidor ya tiene una lectura ese día es casi seguro
+      un registro duplicado (la lectura es mensual). El escape correcto es
+      eliminar la lectura errada (DELETE /lecturas/{id}) y volver a registrar.
+    - VALOR MENOR que la anterior: el consumo saldría negativo (se digitó un
+      valor viejo o al revés).
+
+    El valor IGUAL al anterior NO se bloquea: la detección de frenado depende
+    de poder registrar lecturas idénticas; ese caso pide confirmación en el
+    CMS (aquí no hay interacción, solo bloqueos duros).
+    """
+    serial = db.execute(
+        select(models.Micromedidor.serial).where(models.Micromedidor.id == micromedidor_id)
+    ).scalar() or f"#{micromedidor_id}"
+
+    misma = db.execute(
+        select(models.Lectura.id)
+        .where(
+            models.Lectura.micromedidor_id == micromedidor_id,
+            models.Lectura.fecha == fecha,
+        )
+        .limit(1)
+    ).scalar()
+    if misma is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Ya existe una lectura del medidor {serial} con fecha {fecha}. "
+                "Si fue un error, elimina esa lectura y vuelve a registrarla."
+            ),
+        )
+
+    if not estimada and valor is not None:
+        previa = _lectura_previa(db, micromedidor_id, fecha)
+        if previa is not None and previa.lectura is not None:
+            if _entero(valor) < _entero(previa.lectura):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f"La lectura ({_entero(valor)}) es MENOR que la anterior "
+                        f"({_entero(previa.lectura)} del {previa.fecha}): el consumo saldría "
+                        "negativo. Revisa el valor; si el medidor fue reemplazado, "
+                        "registra el medidor nuevo."
+                    ),
+                )
+
+
 def filtrar_suscriptores(db: Session, *, nombre=None, identificacion=None, sector=None,
                          tipo_usuario=None, con_medidor: bool | None = None,
                          page: int | None = None, page_size: int = 20,
