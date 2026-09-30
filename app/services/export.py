@@ -124,7 +124,8 @@ def a_pdf(filas: Sequence[dict], columnas: Sequence[str], titulo: str) -> bytes:
         topMargin=36 * mm, bottomMargin=20 * mm,
     )
 
-    generado = datetime.now().strftime("%d/%m/%Y %H:%M")
+    from .common import ahora_colombia
+    generado = ahora_colombia().strftime("%d/%m/%Y %H:%M")
 
     def dibujar_membrete(canvas, documento):
         ancho, alto = landscape(letter)

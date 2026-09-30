@@ -45,6 +45,13 @@ def _responder(filas, columnas, formato: str, nombre: str, titulo: str):
     raise HTTPException(400, "formato debe ser csv, xlsx o pdf")
 
 
+def _entero(v):
+    """Las lecturas/consumos son NÚMEROS ENTEROS: normaliza Decimals heredados."""
+    if v is None:
+        return None
+    return int(Decimal(str(v)).to_integral_value())
+
+
 def _stock_resumen(db, e, ubicacion_id: int | None = None):
     """Total de existencias y detalle por ubicación de un elemento de inventario.
 
@@ -162,6 +169,7 @@ def reporte_micromedidores(
     tipo_usuario: str | None = None,
     micromedidor_id: int | None = None,
     suscriptor_id: int | None = None,
+    buscar: str | None = None,
     fecha_inicio: str | None = None,
     fecha_fin: str | None = None,
     orden: str = Query(default="suscriptor"),
@@ -202,11 +210,11 @@ def reporte_micromedidores(
 
     # lecturas (consumo)
     filas, _ = svc_mm.filtrar_lecturas(db, micromedidor_id=micromedidor_id, suscriptor_id=suscriptor_id,
-                                       sector=sector, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
+                                       sector=sector, buscar=buscar, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin)
     datos = [{"fecha": l["fecha"], "hora": l["hora"],
               "suscriptor": l["suscriptor_nombre"] or l["suscriptor_id"],
               "medidor": l["medidor_serial"] or l["micromedidor_id"],
-              "lectura": l["lectura"], "consumo": l["consumo"],
+              "lectura": _entero(l["lectura"]), "consumo": _entero(l["consumo"]),
               "promedio_usado": l["promedio_usado"], "irregular": l["irregular"], "novedad": l["novedad"] or "",
               "foto_url": l["foto_url"] or ""}
              for l in filas]

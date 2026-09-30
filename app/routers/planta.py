@@ -1,5 +1,5 @@
 """Router de planta de tratamiento (RF-37..RF-54)."""
-from datetime import date, datetime
+from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -26,7 +26,7 @@ from ..schemas import (
     TipoMovimiento,
 )
 from ..security import get_current_user, get_db, require_role
-from ..services.common import sellar, validar_foto_url, como_pagina
+from ..services.common import ahora_colombia, como_pagina, hoy_colombia, sellar, validar_foto_url
 from ..services import planta as svc_planta
 
 router = APIRouter(prefix="/planta", tags=["Planta de tratamiento"])
@@ -101,8 +101,8 @@ def crear_medicion(
     med = models.Medicion(
         parametro_id=payload.parametro_id,
         valor=payload.valor,
-        fecha=payload.fecha or date.today(),
-        hora=payload.hora or datetime.now().time(),
+        fecha=payload.fecha or hoy_colombia(),
+        hora=payload.hora or ahora_colombia().time(),
         responsable_id=payload.responsable_id or usuario.id,
         fuera_rango=fuera,
         accion_correctiva=payload.accion_correctiva,
@@ -170,8 +170,8 @@ def crear_dosificacion(
     # La dosificación es un punto de salida del inventario: descuenta del stock
     # del insumo/químico (punto 5). Si viene ubicacion_id (p. ej. Planta de
     # tratamiento), SOLO descuenta de esa ubicación.
-    fecha = payload.fecha or date.today()
-    hora = payload.hora or datetime.now().time()
+    fecha = payload.fecha or hoy_colombia()
+    hora = payload.hora or ahora_colombia().time()
     descuentos = svc_planta.aplicar_dosificacion(db, elemento, payload.cantidad, payload.ubicacion_id)
     d = models.Dosificacion(
         elemento_id=payload.elemento_id,
@@ -239,8 +239,8 @@ def crear_actividad(
 ):
     a = models.ActividadPlanta(
         tipo=payload.tipo,
-        fecha=payload.fecha or date.today(),
-        hora=payload.hora or datetime.now().time(),
+        fecha=payload.fecha or hoy_colombia(),
+        hora=payload.hora or ahora_colombia().time(),
         responsable_id=payload.responsable_id or usuario.id,
         observaciones=payload.observaciones,
         evidencia=payload.evidencia,
@@ -306,7 +306,7 @@ def crear_horas(
     usuario: models.Usuario = Depends(require_role(_ESCRITORES)),
 ):
     h = models.HoraServicio(
-        fecha=payload.fecha or date.today(),
+        fecha=payload.fecha or hoy_colombia(),
         horas=payload.horas,
         responsable_id=payload.responsable_id or usuario.id,
         observaciones=payload.observaciones,

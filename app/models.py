@@ -290,8 +290,9 @@ class Lectura(Base):
     suscriptor_id = Column(Integer, ForeignKey("suscriptores.id", ondelete="RESTRICT"), nullable=False)
     fecha = Column(Date, nullable=False)
     hora = Column(Time)
-    lectura = Column(Numeric(12, 3), nullable=False)
-    consumo = Column(Numeric(12, 3))
+    # Lecturas y consumos en NÚMEROS ENTEROS (m³ sin decimales).
+    lectura = Column(Numeric(12, 0), nullable=False)
+    consumo = Column(Numeric(12, 0))
     promedio_usado = Column(Boolean, nullable=False, server_default="0")
     responsable_id = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"))
     novedad = Column(String(200))

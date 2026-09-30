@@ -1,11 +1,29 @@
 """Helpers de auditoría (trazabilidad RNF-07), paginación y evidencias fotográficas."""
 
 import math
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
 
 from ..config import settings
+
+# Zona horaria oficial de operación: Colombia (UTC-5, sin horario de verano).
+# TODA fecha/hora por defecto del sistema (lecturas, mediciones, actividades,
+# movimientos, evidencias, dashboard) se resuelve con esta zona, NO con la del
+# servidor, que puede estar en UTC.
+ZONA_COLOMBIA = ZoneInfo("America/Bogota")
+
+
+def ahora_colombia() -> datetime:
+    """Momento actual en hora de Colombia (naive: fecha+hora locales UTC-5)."""
+    return datetime.now(ZONA_COLOMBIA).replace(tzinfo=None)
+
+
+def hoy_colombia() -> date:
+    """Fecha de hoy en Colombia (puede diferir del `date.today()` del servidor)."""
+    return ahora_colombia().date()
 
 
 def sellar(obj, usuario, nuevo: bool = True) -> None:

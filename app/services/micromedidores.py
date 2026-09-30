@@ -6,14 +6,22 @@ calcula como lectura previa + promedio histórico de consumo
 (promedio_usado=True) y el consumo registrado es ese promedio.
 """
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from .. import models
 from .common import aplicar_paginacion, condiciones_busqueda, orden_validado
+
+
+def _entero(v) -> int:
+    """Normaliza a NÚMERO ENTERO (las lecturas no usan decimales).
+
+    Acepta Decimal/int/str; redondea al entero más cercano (0.5 hacia arriba).
+    """
+    return int(Decimal(str(v)).to_integral_value(rounding=ROUND_HALF_UP))
 
 
 def _lectura_previa(db: Session, micromedidor_id: int, fecha):
@@ -58,13 +66,15 @@ def resolver_lectura(
     lectura: Decimal | None,
     fecha,
     estimada: bool = False,
-) -> tuple[Decimal, Decimal | None, bool]:
+) -> tuple[int, int | None, bool]:
     """Resuelve (valor_del_medidor, consumo, promedio_usado) al registrar una lectura.
+
+    Todo en NÚMEROS ENTEROS (m³ sin decimales).
 
     - Lectura física: consumo = lectura - lectura previa (None si es la primera).
     - Lectura estimada (no fue posible tomar la medición): valor del medidor =
       lectura previa + promedio histórico; consumo = ese promedio
-      (promedio_usado=True).
+      (promedio_usado=True). Ambos redondeados al entero más cercano.
     """
     previa = _lectura_previa(db, micromedidor_id, fecha)
 
@@ -80,16 +90,17 @@ def resolver_lectura(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="No hay consumos históricos para estimar la lectura.",
             )
-        valor = Decimal(str(previa.lectura)) + Decimal(str(promedio))
-        return valor, Decimal(str(promedio)), True
+        consumo = _entero(promedio)
+        valor = _entero(Decimal(str(previa.lectura)) + Decimal(str(promedio)))
+        return valor, consumo, True
 
     if previa is not None and previa.lectura is not None:
         return (
-            Decimal(str(lectura)),
-            Decimal(str(lectura)) - Decimal(str(previa.lectura)),
+            _entero(lectura),
+            _entero(Decimal(str(lectura))) - _entero(previa.lectura),
             False,
         )
-    return Decimal(str(lectura)), None, False
+    return _entero(lectura), None, False
 
 
 def filtrar_suscriptores(db: Session, *, nombre=None, identificacion=None, sector=None,
@@ -140,13 +151,13 @@ def opciones_suscriptores(db: Session):
 
 
 def _valor_lectura(l) -> Decimal:
-    """Valor de la lectura normalizado a la escala de la columna (12,3).
+    """Valor de la lectura normalizado a ENTERO (escala de la columna 12,0).
 
     Necesario porque la lectura recién insertada llega como Decimal('100')
-    mientras las persistidas vuelven de MySQL como Decimal('100.000'):
+    mientras las persistidas vuelven de MySQL como Decimal('100'):
     comparar str() daría falsos 'diferentes' y rompería el frenado.
     """
-    return Decimal(str(l.lectura)).quantize(Decimal("0.001"))
+    return Decimal(str(l.lectura)).quantize(Decimal("1"))
 
 
 def evaluar_condicion(db: Session, micromedidor_id: int):
@@ -253,11 +264,28 @@ def opciones_micromedidores(db: Session):
     ).all()
 
 
+def ultima_lectura(db: Session, micromedidor_id: int):
+    """Última lectura registrada de un medidor (None si no tiene).
+
+    La usa el CMS al registrar una lectura nueva: muestra la lectura anterior
+    y permite detectar duplicadas (p. ej. dos lecturas el mismo día).
+    """
+    return db.execute(
+        select(models.Lectura)
+        .where(models.Lectura.micromedidor_id == micromedidor_id)
+        .order_by(models.Lectura.fecha.desc(), models.Lectura.hora.desc(), models.Lectura.id.desc())
+    ).scalars().first()
+
+
 def filtrar_lecturas(db: Session, *, micromedidor_id=None, suscriptor_id=None,
-                     sector=None, fecha_inicio=None, fecha_fin=None,
+                     sector=None, fecha_inicio=None, fecha_fin=None, buscar=None,
                      page: int | None = None, page_size: int = 20,
                      orden: str | None = None, dir_orden: str | None = None):
-    """Lista (o página) de lecturas con suscriptor y medidor embebidos."""
+    """Lista (o página) de lecturas con suscriptor y medidor embebidos.
+
+    `buscar`: búsqueda unificada por suscriptor (nombre), medidor (serial) o
+    ubicación (dirección del medidor o del suscriptor).
+    """
     stmt = (
         select(
             models.Lectura,
@@ -277,6 +305,14 @@ def filtrar_lecturas(db: Session, *, micromedidor_id=None, suscriptor_id=None,
         stmt = stmt.where(models.Lectura.fecha >= fecha_inicio)
     if fecha_fin:
         stmt = stmt.where(models.Lectura.fecha <= fecha_fin)
+    if buscar:
+        like = f"%{buscar}%"
+        stmt = stmt.where(or_(
+            models.Suscriptor.nombre.ilike(like),
+            models.Micromedidor.serial.ilike(like),
+            models.Micromedidor.direccion.ilike(like),
+            models.Suscriptor.direccion.ilike(like),
+        ))
 
     permitidos = {
         "fecha": models.Lectura.fecha,

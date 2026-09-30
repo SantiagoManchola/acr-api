@@ -1,9 +1,9 @@
 """Esquemas Pydantic v2 para validación de entrada/salida (RNF-06)."""
 from datetime import date, datetime, time
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Generic, List, Optional, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
 from .config import settings
 from .models import (
@@ -14,6 +14,18 @@ from .models import (
     TipoMovimiento,
     TipoUsuario,
 )
+
+
+def _a_entero(v):
+    """Normaliza lecturas/consumos a NÚMERO ENTERO (m³ sin decimales).
+
+    El ORM devuelve Decimal (p. ej. Decimal('100.000') o datos heredados con
+    decimales): se convierte al entero más cercano para que toda la salida de
+    la API sea entera.
+    """
+    if v is None:
+        return None
+    return int(Decimal(str(v)).to_integral_value(rounding=ROUND_HALF_UP))
 
 # Base común con from_attributes (ORM mode)
 class _ORM(BaseModel):
@@ -328,7 +340,8 @@ class LecturaCreate(BaseModel):
     hora: Optional[time] = None
     # None cuando la lectura es ESTIMADA (no fue posible tomar la medición):
     # el sistema calcula el valor del medidor con la lectura previa + promedio.
-    lectura: Optional[Decimal] = None
+    # Solo NÚMEROS ENTEROS (m³ sin decimales); pydantic rechaza 100.5.
+    lectura: Optional[int] = Field(default=None, ge=0)
     responsable_id: Optional[int] = None
     novedad: Optional[str] = None
     irregular: bool = False
@@ -344,13 +357,37 @@ class LecturaOut(_ORM):
     medidor_serial: Optional[str] = None
     fecha: date
     hora: Optional[time] = None
-    lectura: Decimal
-    consumo: Optional[Decimal] = None
+    lectura: int
+    consumo: Optional[int] = None
     promedio_usado: bool
     responsable_id: Optional[int] = None
     novedad: Optional[str] = None
     irregular: bool
     foto_url: Optional[str] = None
+
+    # Normaliza a entero lo que venga del ORM (Decimal) o de datos heredados
+    # con decimales: toda la salida de la API es entera.
+    _enteros = field_validator("lectura", "consumo", mode="before")(_a_entero)
+
+
+class LecturaAnteriorOut(BaseModel):
+    """Última lectura registrada de un medidor (o null si no tiene).
+
+    Se muestra al registrar una lectura nueva para verificar la lectura
+    previa y detectar duplicadas (misma fecha / mismo valor).
+    """
+
+    id: int
+    micromedidor_id: int
+    suscriptor_id: int
+    fecha: date
+    hora: Optional[time] = None
+    lectura: int
+    consumo: Optional[int] = None
+    promedio_usado: bool
+    irregular: bool
+
+    _enteros = field_validator("lectura", "consumo", mode="before")(_a_entero)
 
 
 class LecturaFotoUpdate(BaseModel):

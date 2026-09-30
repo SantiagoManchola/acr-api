@@ -4,7 +4,7 @@ Evita que el CMS descargue listas completas (suscriptores, lecturas,
 elementos...) solo para pintar KPIs y tops: cada bloque se calcula en la
 API con COUNT/SUM/AVG y límites, y el payload respeta el rol del usuario.
 """
-from datetime import date, timedelta
+from datetime import timedelta
 from decimal import Decimal
 
 from sqlalchemy import case, func, select
@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from .. import models
 from . import inventario as svc_inv, planta as svc_planta
+from .common import hoy_colombia
 
 
 def ubicacion_id(db: Session, patron: str) -> int | None:
@@ -162,7 +163,7 @@ def resumen_micromedicion(db: Session, dias: int, ver_medidores: bool, ver_consu
                 for (i, s, n, sec) in filas
             ]
     if ver_consumo:
-        hoy = date.today()
+        hoy = hoy_colombia()
         desde = hoy - timedelta(days=dias - 1)
         base = select(models.Lectura.consumo).where(
             models.Lectura.fecha >= desde,

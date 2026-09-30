@@ -1,6 +1,5 @@
 """Router de micromedidores (RF-21..RF-36)."""
-from datetime import date, datetime
-from decimal import Decimal
+from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy import func, select
@@ -8,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from .. import models
 from ..schemas import (
+    LecturaAnteriorOut,
     LecturaCreate,
     LecturaFotoUpdate,
     LecturaOut,
@@ -24,7 +24,7 @@ from ..schemas import (
     SuscriptorUpdate,
 )
 from ..security import get_current_user, get_db, require_role
-from ..services.common import sellar, validar_foto_url, como_pagina
+from ..services.common import ahora_colombia, como_pagina, hoy_colombia, sellar, validar_foto_url
 from ..services import micromedidores as svc_mm
 
 router = APIRouter(prefix="", tags=["Micromedidores"])
@@ -36,6 +36,8 @@ _ESCRITORES = ["admin", "administrativo"]
 _TOMADORES_LECTURA = ["admin", "administrativo", "fontanero"]
 # Adjuntar/cambiar evidencia de una lectura YA registrada: SOLO admin.
 _SOLO_ADMIN = ["admin"]
+# Eliminar lecturas tomadas: superadministrador (admin) y administrativo.
+_ELIMINAN_LECTURA = ["admin", "administrativo"]
 
 
 # ----------------------------- Suscriptores ----------------------------------
@@ -295,14 +297,17 @@ def crear_lectura(
     if not estimada and payload.lectura is None:
         raise HTTPException(400, "El valor del medidor es obligatorio para una lectura física")
 
+    # Fecha/hora por defecto en hora de Colombia (UTC-5): si el servidor está
+    # en UTC no se deben registrar lecturas con fecha/hora desfasada.
+    fecha_lectura = payload.fecha or hoy_colombia()
     valor, consumo, promedio_usado = svc_mm.resolver_lectura(
-        db, payload.micromedidor_id, payload.lectura, payload.fecha or date.today(), estimada
+        db, payload.micromedidor_id, payload.lectura, fecha_lectura, estimada
     )
     lectura = models.Lectura(
         micromedidor_id=payload.micromedidor_id,
         suscriptor_id=payload.suscriptor_id,
-        fecha=payload.fecha or date.today(),
-        hora=payload.hora or datetime.now().time(),
+        fecha=fecha_lectura,
+        hora=payload.hora or ahora_colombia().time(),
         lectura=valor,
         consumo=consumo,
         promedio_usado=promedio_usado,
@@ -349,11 +354,39 @@ def actualizar_foto_lectura(
     return lectura
 
 
+@router.delete(
+    "/lecturas/{lid}",
+    summary="Eliminar lectura definitivamente (superadmin/administrativo)",
+)
+def eliminar_lectura(
+    lid: int,
+    db: Session = Depends(get_db),
+    _: models.Usuario = Depends(require_role(_ELIMINAN_LECTURA)),
+):
+    """Borrado FÍSICO de la lectura: el registro desaparece por completo, así
+    que deja de verse en listados, reportes, dashboard y gráficas, y deja de
+    contar para consumos, promedios y detección de frenado. No hay forma de
+    recuperarla (no es una inactivación)."""
+    lectura = db.get(models.Lectura, lid)
+    if not lectura:
+        raise HTTPException(404, "Lectura no encontrada")
+    micromedidor_id = lectura.micromedidor_id
+    db.delete(lectura)
+    db.flush()
+    # La condición del medidor (frenado automático) depende de las últimas
+    # lecturas: se reevalúa tras la eliminación.
+    svc_mm.evaluar_condicion(db, micromedidor_id)
+    db.commit()
+    return {"ok": True}
+
+
 @router.get("/lecturas", response_model=LecturasPagina, summary="Consultar lecturas (paginado)")
 def listar_lecturas(
     micromedidor_id: int | None = None,
     suscriptor_id: int | None = None,
     sector: str | None = None,
+    buscar: str | None = Query(default=None, max_length=80,
+                               description="Búsqueda unificada: suscriptor, serial del medidor o dirección"),
     fecha_inicio: date | None = None,
     fecha_fin: date | None = None,
     page: int = Query(default=1, ge=1),
@@ -365,10 +398,29 @@ def listar_lecturas(
 ):
     items, total = svc_mm.filtrar_lecturas(
         db, micromedidor_id=micromedidor_id, suscriptor_id=suscriptor_id,
-        sector=sector, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin,
+        sector=sector, buscar=buscar, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin,
         page=page, page_size=page_size, orden=orden, dir_orden=dir_orden,
     )
     return como_pagina(items, total, page, page_size)
+
+
+@router.get(
+    "/lecturas/anterior/{micromedidor_id}",
+    response_model=LecturaAnteriorOut | None,
+    summary="Última lectura registrada de un medidor (para validar duplicadas)",
+)
+def lectura_anterior(
+    micromedidor_id: int,
+    db: Session = Depends(get_db),
+    _: models.Usuario = Depends(require_role(_LECTORES)),
+):
+    """Devuelve la última lectura del medidor o `null` si no tiene ninguna.
+
+    El CMS la consulta al elegir el medidor en el formulario «Registrar
+    lectura»: muestra la lectura anterior (valor, fecha, consumo) y permite
+    detectar si ya se tomó una lectura (p. ej. duplicada el mismo día).
+    """
+    return svc_mm.ultima_lectura(db, micromedidor_id)
 
 
 @router.get(

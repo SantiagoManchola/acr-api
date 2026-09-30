@@ -19,9 +19,9 @@ verificación posterior de tamaño con borrado si excede el límite.
 Solo roles escritores de cada módulo pueden pedir firmas.
 """
 import uuid
-from datetime import date
 
 from ..config import settings
+from .common import hoy_colombia
 
 # Tipos aceptados (el frontend siempre envía WebP o JPEG tras comprimir).
 TIPOS_PERMITIDOS = {
@@ -61,7 +61,7 @@ def _validar_modulo_tipo(modulo: str, content_type: str) -> str:
 
 
 def _nueva_key(modulo: str, ext: str) -> str:
-    hoy = date.today()
+    hoy = hoy_colombia()
     return f"evidencias/{modulo}/{hoy:%Y}/{hoy:%m}/{uuid.uuid4().hex}.{ext}"
 
 

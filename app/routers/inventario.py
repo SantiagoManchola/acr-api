@@ -1,5 +1,5 @@
 """Router de inventario (RF-06..RF-20)."""
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
@@ -29,7 +29,7 @@ from ..schemas import (
     UbicacionUpdate,
 )
 from ..security import get_current_user, get_db, require_role
-from ..services.common import condiciones_busqueda, sellar, como_pagina, orden_validado
+from ..services.common import ahora_colombia, hoy_colombia, condiciones_busqueda, sellar, como_pagina, orden_validado
 from ..services import inventario as svc_inventario
 
 router = APIRouter(prefix="/inventario", tags=["Inventario"])
@@ -524,8 +524,8 @@ def crear_traslado(
         oficina = _oficina_id(db)
         if oficina is None or payload.ubicacion_origen_id != oficina:
             raise HTTPException(403, "Solo puede trasladar stock desde la ubicación Oficina")
-    fecha = payload.fecha or date.today()
-    hora = payload.hora or datetime.now().time()
+    fecha = payload.fecha or hoy_colombia()
+    hora = payload.hora or ahora_colombia().time()
     traslado = svc_inventario.aplicar_traslado(
         db, elemento, payload.ubicacion_origen_id, payload.ubicacion_destino_id,
         payload.cantidad, usuario.id, payload.observaciones, fecha, hora,
@@ -738,8 +738,8 @@ def entrada(
         raise HTTPException(404, "Elemento no encontrado")
     # El operario solo ingresa químicos EN planta.
     _exigir_quimico_planta(db, usuario, elem.categoria_id, payload.ubicacion_id)
-    fecha = payload.fecha or date.today()
-    hora = payload.hora or datetime.now().time()
+    fecha = payload.fecha or hoy_colombia()
+    hora = payload.hora or ahora_colombia().time()
     svc_inventario.aplicar_movimiento(
         db, elem, payload.ubicacion_id, TipoMovimiento.entrada, float(payload.cantidad),
         usuario.id, payload.motivo, payload.observaciones, fecha, hora,
@@ -770,8 +770,8 @@ def salida(
     elem = db.get(models.ElementoInventario, elemento_id)
     if not elem:
         raise HTTPException(404, "Elemento no encontrado")
-    fecha = payload.fecha or date.today()
-    hora = payload.hora or datetime.now().time()
+    fecha = payload.fecha or hoy_colombia()
+    hora = payload.hora or ahora_colombia().time()
     svc_inventario.aplicar_movimiento(
         db, elem, payload.ubicacion_id, TipoMovimiento.salida, float(payload.cantidad),
         usuario.id, payload.motivo, payload.observaciones, fecha, hora,
