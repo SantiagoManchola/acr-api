@@ -1,8 +1,9 @@
 """Procesamiento en memoria del formato mensual de facturación.
 
 El servicio solo consulta la DB. Nunca crea ni modifica suscriptores, medidores
-o lecturas. La salida es una copia del XLSX original en la que únicamente se
-rellena la columna del mes solicitado.
+o lecturas. Acepta plantillas .xlsx (moderno) y .xls (Excel 97-2003, se
+convierte a .xlsx en memoria). La salida SIEMPRE es una copia .xlsx del
+original en la que únicamente se rellena la columna del mes solicitado.
 """
 from collections import Counter, defaultdict
 from datetime import date
@@ -13,12 +14,17 @@ import re
 import unicodedata
 from zipfile import BadZipFile
 
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models
+
+# Firma OLE2 (Compound File) de los Excel 97-2003 (.xls); los .xlsx empiezan
+# con la firma ZIP "PK".
+_MAGIC_OLE2 = b"\xd0\xcf\x11\xe0"
+_MAGIC_ZIP = b"PK"
 
 MESES = (
     ("ene", "Enero"), ("feb", "Febrero"), ("mar", "Marzo"),
@@ -37,6 +43,68 @@ MAX_FILAS = 20_000
 
 class PlantillaFacturacionError(ValueError):
     """Error legible de validación de la plantilla de facturación."""
+
+
+def _xls_a_xlsx(contenido: bytes) -> bytes:
+    """Convierte un Excel 97-2003 (.xls) a .xlsx EN MEMORIA, conservando el
+    orden de hojas y la posición de las celdas (con sus valores).
+
+    Limitaciones conocidas: xlrd entrega los valores CALCULADOS (no las
+    fórmulas) y no conserva estilos. Para el flujo de facturación es
+    suficiente: la plantilla se detecta por encabezados y la salida es la
+    tabla con el mes rellenado.
+    """
+    import xlrd
+
+    try:
+        libro = xlrd.open_workbook(file_contents=contenido)
+    except Exception as exc:  # xlrd.XLRDError y variantes de archivo corrupto
+        raise PlantillaFacturacionError(
+            "No se pudo leer el archivo .xls (Excel 97-2003). Verifica que sea "
+            "un Excel válido y que no esté protegido con contraseña."
+        ) from exc
+
+    wb = Workbook()
+    wb.remove(wb.active)
+    for hoja in libro.sheets():
+        ws = wb.create_sheet(title=hoja.name[:31])
+        for fila in range(hoja.nrows):
+            for col in range(hoja.ncols):
+                celda = hoja.cell(fila, col)
+                tipo, valor = celda.ctype, celda.value
+                destino = ws.cell(fila + 1, col + 1)
+                if tipo == xlrd.XL_CELL_DATE:
+                    try:
+                        destino.value = xlrd.xldate_as_datetime(valor, libro.datemode)
+                    except Exception:
+                        destino.value = str(valor)
+                elif tipo == xlrd.XL_CELL_NUMBER:
+                    destino.value = int(valor) if float(valor).is_integer() else float(valor)
+                elif tipo == xlrd.XL_CELL_BOOLEAN:
+                    destino.value = bool(valor)
+                elif tipo == xlrd.XL_CELL_TEXT:
+                    if str(valor).strip():
+                        destino.value = valor
+                # EMPTY/BLANK/ERROR: se dejan vacías
+    salida = BytesIO()
+    wb.save(salida)
+    return salida.getvalue()
+
+
+def _asegurar_xlsx(contenido: bytes) -> bytes:
+    """Normaliza la entrada: si es .xls (Excel 97-2003) la convierte a .xlsx.
+
+    Se detecta por firma del archivo (no por extensión): OLE2 -> .xls,
+    ZIP -> .xlsx. Todo el resto del pipeline trabaja SIEMPRE sobre .xlsx.
+    """
+    if contenido.startswith(_MAGIC_ZIP):
+        return contenido
+    if contenido.startswith(_MAGIC_OLE2):
+        return _xls_a_xlsx(contenido)
+    raise PlantillaFacturacionError(
+        "No se pudo abrir el archivo. Sube una plantilla válida de Excel "
+        ".xlsx o .xls (Excel 97-2003)."
+    )
 
 
 def _codigo(valor) -> str:
@@ -95,12 +163,14 @@ def _valor_json(valor):
 
 
 def _buscar_plantilla(contenido: bytes):
+    contenido = _asegurar_xlsx(contenido)
     try:
         wb = load_workbook(BytesIO(contenido), data_only=False)
         wb_cache = load_workbook(BytesIO(contenido), data_only=True)
     except (InvalidFileException, BadZipFile, OSError, ValueError) as exc:
         raise PlantillaFacturacionError(
-            "No se pudo abrir el archivo. Sube una plantilla válida de Excel .xlsx."
+            "No se pudo abrir el archivo. Sube una plantilla válida de Excel "
+            ".xlsx o .xls (Excel 97-2003)."
         ) from exc
 
     candidatas = []
@@ -535,6 +605,7 @@ def analizar_facturacion(
 
 def generar_archivo_facturacion(contenido: bytes, hoja: str, planes: list[dict]) -> bytes:
     """Rellena solo la columna objetivo y devuelve un XLSX nuevo en memoria."""
+    contenido = _asegurar_xlsx(contenido)
     try:
         wb = load_workbook(BytesIO(contenido), data_only=False)
     except (InvalidFileException, BadZipFile, OSError, ValueError) as exc:

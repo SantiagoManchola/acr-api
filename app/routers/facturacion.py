@@ -19,9 +19,14 @@ _TIPO_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 def _leer_archivo(archivo: UploadFile) -> bytes:
+    """Acepta .xlsx (moderno) y .xls (Excel 97-2003); el servicio convierte
+    el .xls a .xlsx en memoria antes de procesarlo."""
     nombre = (archivo.filename or "").lower()
-    if not nombre.endswith(".xlsx"):
-        raise HTTPException(400, "Sube el archivo del formato contable en Excel .xlsx.")
+    if not (nombre.endswith(".xlsx") or nombre.endswith(".xls")):
+        raise HTTPException(
+            400,
+            "Sube el archivo del formato contable en Excel .xlsx o .xls (Excel 97-2003).",
+        )
     contenido = archivo.file.read(MAX_ARCHIVO_BYTES + 1)
     if len(contenido) > MAX_ARCHIVO_BYTES:
         raise HTTPException(413, "El archivo supera el máximo permitido de 20 MB.")
