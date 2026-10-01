@@ -215,10 +215,20 @@ def reporte_micromedidores(
               "suscriptor": l["suscriptor_nombre"] or l["suscriptor_id"],
               "medidor": l["medidor_serial"] or l["micromedidor_id"],
               "lectura": _entero(l["lectura"]), "consumo": _entero(l["consumo"]),
+              "anterior_lectura": l.get("anterior_lectura"),
+              "anterior_fecha": l.get("anterior_fecha") or "",
               "promedio_usado": l["promedio_usado"], "irregular": l["irregular"], "novedad": l["novedad"] or "",
               "foto_url": l["foto_url"] or ""}
              for l in filas]
-    columnas = ["fecha", "hora", "suscriptor", "medidor", "lectura", "consumo", "promedio_usado", "irregular", "novedad", "foto_url"]
+    columnas = ["fecha", "hora", "suscriptor", "medidor", "lectura", "consumo",
+                "anterior_lectura", "anterior_fecha", "promedio_usado", "irregular", "novedad", "foto_url"]
+    if formato == "pdf":
+        # Columna VACÍA de hoja de campo: el fontanero imprime el PDF y escribe
+        # a mano la nueva medición junto a cada registro. El valor es un
+        # espacio (no vacío) para que el PDF no lo cambie por «—».
+        columnas.append("nueva_lectura")
+        for fila in datos:
+            fila["nueva_lectura"] = " "
     return _responder(datos, columnas, formato, "reporte_consumo", "Consumo micromedidores ACR")
 
 

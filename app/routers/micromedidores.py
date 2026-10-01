@@ -392,7 +392,7 @@ def listar_lecturas(
     suscriptor_id: int | None = None,
     sector: str | None = None,
     buscar: str | None = Query(default=None, max_length=80,
-                               description="Búsqueda unificada: suscriptor, serial del medidor o dirección"),
+                               description="Búsqueda unificada: suscriptor, serial del medidor, dirección o valor de la lectura"),
     fecha_inicio: date | None = None,
     fecha_fin: date | None = None,
     page: int = Query(default=1, ge=1),

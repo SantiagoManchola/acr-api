@@ -5,7 +5,8 @@ medición física se registra una lectura ESTIMADA: el valor del medidor se
 calcula como lectura previa + promedio histórico de consumo
 (promedio_usado=True) y el consumo registrado es ese promedio.
 """
-from datetime import date
+from collections import defaultdict
+from datetime import date, time as dtime
 from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import HTTPException, status
@@ -332,14 +333,74 @@ def ultima_lectura(db: Session, micromedidor_id: int):
     ).scalars().first()
 
 
+def _clave_orden_lectura(fecha, hora, lid):
+    """Clave de orden (fecha, hora, id) tolerante a hora NULL."""
+    return (fecha, hora if hora is not None else dtime.min, lid)
+
+
+def _adjuntar_lectura_anterior(db: Session, items: list[dict]) -> None:
+    """Agrega a cada fila `anterior_lectura` y `anterior_fecha` (fecha+hora de
+    toma de la lectura previa del mismo medidor).
+
+    El anterior de una lectura es el registro inmediatamente previo del
+    medidor (por fecha, hora e id): es el que originó su consumo. Se resuelve
+    con UNA consulta para todos los medidores de la página (los medidores
+    tienen lecturas mensuales: el historial por medidor es pequeño).
+    """
+    ids_medidores = {it["micromedidor_id"] for it in items}
+    if not ids_medidores:
+        for it in items:
+            it["anterior_lectura"] = None
+            it["anterior_fecha"] = None
+        return
+
+    historial = defaultdict(list)
+    filas = db.execute(
+        select(
+            models.Lectura.micromedidor_id,
+            models.Lectura.fecha,
+            models.Lectura.hora,
+            models.Lectura.id,
+            models.Lectura.lectura,
+        )
+        .where(models.Lectura.micromedidor_id.in_(ids_medidores))
+        .order_by(
+            models.Lectura.micromedidor_id,
+            models.Lectura.fecha,
+            models.Lectura.hora,
+            models.Lectura.id,
+        )
+    ).all()
+    for mid, fecha, hora, lid, valor in filas:
+        historial[mid].append((_clave_orden_lectura(fecha, hora, lid), valor))
+
+    for it in items:
+        clave = _clave_orden_lectura(it["fecha"], it["hora"], it["id"])
+        previo = None
+        for k, valor in historial.get(it["micromedidor_id"], []):
+            if k < clave:
+                previo = (k, valor)
+            else:
+                break
+        if previo is None:
+            it["anterior_lectura"] = None
+            it["anterior_fecha"] = None
+        else:
+            (fecha_a, hora_a, _), valor_a = previo
+            it["anterior_lectura"] = _entero(valor_a)
+            it["anterior_fecha"] = (
+                f"{fecha_a} {hora_a.strftime('%H:%M')}" if hora_a else str(fecha_a)
+            )
+
+
 def filtrar_lecturas(db: Session, *, micromedidor_id=None, suscriptor_id=None,
                      sector=None, fecha_inicio=None, fecha_fin=None, buscar=None,
                      page: int | None = None, page_size: int = 20,
                      orden: str | None = None, dir_orden: str | None = None):
     """Lista (o página) de lecturas con suscriptor y medidor embebidos.
 
-    `buscar`: búsqueda unificada por suscriptor (nombre), medidor (serial) o
-    ubicación (dirección del medidor o del suscriptor).
+    `buscar`: búsqueda unificada por suscriptor (nombre), medidor (serial),
+    ubicación (dirección del medidor o del suscriptor) o valor de la lectura.
     """
     stmt = (
         select(
@@ -367,6 +428,9 @@ def filtrar_lecturas(db: Session, *, micromedidor_id=None, suscriptor_id=None,
             models.Micromedidor.serial.ilike(like),
             models.Micromedidor.direccion.ilike(like),
             models.Suscriptor.direccion.ilike(like),
+            # También se puede buscar por el VALOR de la lectura (p. ej. «1030»)
+            # para ubicar la lectura a la que falta subir la foto.
+            models.Lectura.lectura.ilike(like),
         ))
 
     permitidos = {
@@ -392,6 +456,7 @@ def filtrar_lecturas(db: Session, *, micromedidor_id=None, suscriptor_id=None,
         fila["suscriptor_nombre"] = nombre
         fila["medidor_serial"] = serial
         items.append(fila)
+    _adjuntar_lectura_anterior(db, items)
     return items, total
 
 

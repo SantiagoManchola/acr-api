@@ -359,6 +359,10 @@ class LecturaOut(_ORM):
     hora: Optional[time] = None
     lectura: int
     consumo: Optional[int] = None
+    # Lectura previa del mismo medidor y su fecha/hora de toma (contexto del
+    # listado y reportes; None si es la primera lectura del medidor).
+    anterior_lectura: Optional[int] = None
+    anterior_fecha: Optional[str] = None
     promedio_usado: bool
     responsable_id: Optional[int] = None
     novedad: Optional[str] = None
@@ -367,7 +371,7 @@ class LecturaOut(_ORM):
 
     # Normaliza a entero lo que venga del ORM (Decimal) o de datos heredados
     # con decimales: toda la salida de la API es entera.
-    _enteros = field_validator("lectura", "consumo", mode="before")(_a_entero)
+    _enteros = field_validator("lectura", "consumo", "anterior_lectura", mode="before")(_a_entero)
 
 
 class LecturaAnteriorOut(BaseModel):
