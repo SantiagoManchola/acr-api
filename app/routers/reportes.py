@@ -27,6 +27,11 @@ _LECTORES_INV = ["admin", "administrativo", "operario"]
 _LECTORES_MM = ["admin", "administrativo", "fontanero"]
 _LECTORES_PLANTA = ["admin", "operario"]
 
+# Nombres de mes para la matriz anual del reporte de micromedidores
+# (Lectura Enero / Consumo Enero / …, índice 1 = Enero).
+MESES_ES = ("Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+            "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre")
+
 
 def _responder(filas, columnas, formato: str, nombre: str, titulo: str):
     formato = (formato or "csv").lower()
@@ -174,6 +179,12 @@ def reporte_micromedidores(
     fecha_fin: str | None = None,
     orden: str = Query(default="suscriptor"),
     dir_orden: str = Query(default="asc"),
+    # Matriz anual opcional del reporte de micromedidores: con `anio` se
+    # agregan columnas Lectura/Consumo de cada mes; los dos toggles eligen
+    # si aparecen las lecturas, los consumos o ambos.
+    anio: int | None = Query(default=None, ge=2000, le=2100),
+    mostrar_lecturas: bool = Query(default=True),
+    mostrar_consumos: bool = Query(default=True),
     formato: str = Query(default="csv"),
     db=Depends(get_db), _=Depends(require_role(_LECTORES_MM)),
 ):
@@ -203,9 +214,33 @@ def reporte_micromedidores(
         datos = [{"suscriptor": m["suscriptor_nombre"] or "—",
                   "serial": m["serial"], "condicion": m["condicion"],
                   "tipo": m["tipo"] or "", "direccion": m["direccion"] or "",
-                  "fecha_instalacion": m["fecha_instalacion"]} for m in filas]
+                  "fecha_instalacion": m["fecha_instalacion"],
+                  "micromedidor_id": m["id"]} for m in filas]
         columnas = ["suscriptor", "serial", "condicion", "tipo",
                     "direccion", "fecha_instalacion"]
+        if anio is not None:
+            # Matriz anual: enfrente del medidor, lectura y consumo de cada
+            # mes (Lectura Enero, Consumo Enero, …). Sin registro en el mes la
+            # celda queda vacía (en el PDF se ve como «—»).
+            if not (2000 <= anio <= 2100):
+                raise HTTPException(400, "anio debe ser un año de 4 dígitos")
+            mensual = svc_mm.matriz_mensual_lecturas(db, anio)
+            columnas_mes = []
+            for n, nombre_mes in enumerate(MESES_ES, start=1):
+                if mostrar_lecturas:
+                    columnas_mes.append(f"Lectura {nombre_mes}")
+                if mostrar_consumos:
+                    columnas_mes.append(f"Consumo {nombre_mes}")
+            # «Enfrente del medidor»: la matriz va justo después del serial.
+            columnas = ["suscriptor", "serial"] + columnas_mes + columnas[2:]
+            for fila in datos:
+                meses_medidor = mensual["por_medidor"].get(fila.pop("micromedidor_id"), {})
+                for n, nombre_mes in enumerate(MESES_ES, start=1):
+                    registro = meses_medidor.get(n)
+                    if mostrar_lecturas:
+                        fila[f"Lectura {nombre_mes}"] = registro["lectura"] if registro else None
+                    if mostrar_consumos:
+                        fila[f"Consumo {nombre_mes}"] = registro["consumo"] if registro else None
         return _responder(datos, columnas, formato, "reporte_micromedidores", "Micromedidores ACR")
 
     # lecturas (consumo)

@@ -10,11 +10,11 @@ from datetime import date, time as dtime
 from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import extract, func, or_, select
 from sqlalchemy.orm import Session
 
 from .. import models
-from .common import aplicar_paginacion, condiciones_busqueda, orden_validado
+from .common import aplicar_paginacion, condiciones_busqueda, hoy_colombia, orden_validado
 
 
 def _entero(v) -> int:
@@ -298,6 +298,36 @@ def filtrar_micromedidores(db: Session, *, serial=None, suscriptor_id=None, esta
         for (m, nombre) in filas
     ]
     return items, total
+
+
+def matriz_mensual_lecturas(db: Session, anio: int | None = None) -> dict:
+    """Matriz lectura/consumo por mes y medidor para el reporte anual.
+
+    Devuelve {anio, meses, por_medidor}: `por_medidor` mapea cada
+    micromedidor_id a {1..12: {lectura, consumo, promedio_usado}} con la
+    última lectura del mes (la regla de negocio es UNA lectura mensual; el
+    "último" solo cubre correcciones hechas dentro del mismo mes).
+    """
+    anio = anio or hoy_colombia().year
+    filas = db.execute(
+        select(
+            models.Lectura.micromedidor_id,
+            models.Lectura.fecha,
+            models.Lectura.lectura,
+            models.Lectura.consumo,
+            models.Lectura.promedio_usado,
+        )
+        .where(extract("year", models.Lectura.fecha) == anio)
+        .order_by(models.Lectura.micromedidor_id, models.Lectura.fecha, models.Lectura.id)
+    ).all()
+    por_medidor: dict[int, dict[int, dict]] = defaultdict(dict)
+    for mm_id, fecha, lectura, consumo, promedio_usado in filas:
+        por_medidor[mm_id][fecha.month] = {
+            "lectura": _entero(lectura),
+            "consumo": _entero(consumo) if consumo is not None else None,
+            "promedio_usado": bool(promedio_usado),
+        }
+    return {"anio": anio, "meses": list(range(1, 13)), "por_medidor": dict(por_medidor)}
 
 
 def opciones_micromedidores(db: Session):
