@@ -74,8 +74,13 @@ def aplicar_dosificacion(
     esa ubicación: el stock de otras sedes no se toca. Si no, reparte empezando
     por la ubicación con más stock. Devuelve [(ubicacion_id, cantidad), ...] para
     la trazabilidad. La tasa (ml/min) es informativa y NO se descuenta.
+
+    Con cantidad 0 (cambio de tasa/medición sin incorporar químico) no toca el
+    stock ni genera movimientos de inventario: devuelve [].
     """
     c = Decimal(str(cantidad))
+    if c <= 0:
+        return []
     if ubicacion_id is not None:
         stock = db.execute(
             select(models.StockUbicacion).where(
