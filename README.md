@@ -42,8 +42,9 @@ cp .env.example .env   # edita JWT_SECRET y credenciales
 python seed.py
 ```
 
-Crea los roles `admin`, `administrativo`, `operario`, `fontanero` y un
-usuario admin (credenciales desde `ADMIN_USERNAME`/`ADMIN_PASSWORD` del `.env`).
+Crea los roles `admin`, `administrativo`, `operario`, `fontanero`, un
+usuario admin (credenciales desde `ADMIN_USERNAME`/`ADMIN_PASSWORD` del `.env`) y
+el estado inicial `En funcionamiento` de las partes del diagrama de la planta.
 
 ## 4. Ejecutar el API
 
@@ -68,7 +69,7 @@ api/
     main.py          # FastAPI app + CORS + routers
     config.py        # settings (pydantic-settings, desde .env)
     db.py            # engine / SessionLocal / Base
-    models.py        # 16 tablas SQLAlchemy (MySQL)
+    models.py        # 21 tablas SQLAlchemy (MySQL)
     schemas.py       # Pydantic v2
     security.py      # JWT, bcrypt, get_current_user, require_role
     routers/         # auth, usuarios, inventario, micromedidores, planta, reportes
@@ -93,8 +94,13 @@ api/
   (marca `fuera_rango`), `GET /planta/mediciones/fuera-rango`,
   `POST /planta/dosificaciones` (los químicos son insumos en `/inventario`),
   `POST /planta/actividades`, `POST /planta/horas-servicio`.
-- **Reportes:** `GET /reportes/inventario`, `/reportes/consumo`,
+- **Estado operativo de planta:** `GET /planta/componentes`,
+  `POST/PATCH /planta/componentes` (admin), `PATCH /planta/componentes/orden`
+  (admin), `POST /planta/componentes/{id}/estado` (admin/operario) y
+  `GET /planta/estados` (historial paginado).
+- **Reportes:** `GET /reportes/inventario`, `/reportes/micromedidores`,
   `/reportes/planta` con `?formato=csv|xlsx|pdf` (sin formato = JSON).
+  Incluye `tipo=estado-actual` e `tipo=historial-estados`.
 - **Evidencias:** `POST /evidencias/presign` (firma subida PUT directa a R2),
   `POST /evidencias/confirmar` (verifica tamaño; borra si excede 8 MB).
 

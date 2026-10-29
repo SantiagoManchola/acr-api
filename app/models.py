@@ -1,4 +1,4 @@
-"""Modelos SQLAlchemy para las 16 tablas de ACR (mysql+pymysql).
+"""Modelos SQLAlchemy para las 21 tablas de ACR (mysql+pymysql).
 
 Tipos/ENUMs y FKs respetan `datamodel/migrations/acr_migrations.sql`.
 Incluye trazabilidad (created_by/updated_by, created_at/updated_at) y soft
@@ -55,6 +55,13 @@ class CondicionMedidor(str, enum.Enum):
     bueno = "bueno"
     defectuoso = "defectuoso"
     frenado = "frenado"
+
+
+class EstadoOperativoComponente(str, enum.Enum):
+    """Estado operativo de una parte de la planta (semáforo)."""
+    funcionando = "funcionando"
+    afectacion = "afectacion"
+    fuera_servicio = "fuera_servicio"
 
 
 class CategoriaTipo(str, enum.Enum):
@@ -393,6 +400,49 @@ class HoraServicio(Base):
     horas = Column(Numeric(6, 2), nullable=False)
     responsable_id = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"))
     observaciones = Column(Text())
+    created_by = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"))
+    updated_by = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"))
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
+
+
+# ----------------------------- Estado operativo de la planta -----------------
+class ComponentePlanta(Base):
+    """Parte o etapa del diagrama lineal de la planta (catálogo administrable)."""
+
+    __tablename__ = "componentes_planta"
+
+    id = Column(Integer, primary_key=True)
+    nombre = Column(String(100), nullable=False, unique=True)
+    descripcion = Column(String(255))
+    orden = Column(Integer, nullable=False, server_default="0")
+    estado = Column(_estado(), nullable=False, server_default=EstadoRegistro.activo.value)
+    created_by = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"))
+    updated_by = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"))
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
+
+
+class EstadoComponentePlanta(Base):
+    """Evento inmutable del estado operativo de una parte de la planta.
+
+    El estado actual se obtiene del último evento (id mayor) de cada
+    componente. Nunca se edita ni se borra un evento: una corrección se
+    registra como un evento nuevo (trazabilidad RNF-07).
+    """
+
+    __tablename__ = "estados_componente_planta"
+
+    id = Column(Integer, primary_key=True)
+    componente_id = Column(Integer, ForeignKey("componentes_planta.id", ondelete="RESTRICT"), nullable=False)
+    estado = Column(
+        Enum(EstadoOperativoComponente, name="estado_operativo_componente", native_enum=True),
+        nullable=False,
+    )
+    nota = Column(Text())
+    fecha = Column(Date, nullable=False)
+    hora = Column(Time)
+    responsable_id = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"))
     created_by = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"))
     updated_by = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"))
     created_at = Column(DateTime, nullable=False, server_default=func.now())

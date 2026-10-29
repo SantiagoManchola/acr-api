@@ -1,4 +1,4 @@
-"""Router de planta de tratamiento (RF-37..RF-54)."""
+"""Router de planta de tratamiento (RF-37..RF-56)."""
 from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy import select
@@ -10,9 +10,16 @@ from ..schemas import (
     ActividadOut,
     ActividadUpdate,
     ActividadesPagina,
+    ComponentePlantaCreate,
+    ComponentePlantaOut,
+    ComponentePlantaUpdate,
+    ComponentesOrdenUpdate,
     DosificacionCreate,
     DosificacionOut,
     DosificacionesPagina,
+    EstadoComponenteCreate,
+    EstadoComponenteOut,
+    EstadosComponentePagina,
     HoraServicioCreate,
     HoraServicioOut,
     HorasPagina,
@@ -33,8 +40,117 @@ router = APIRouter(prefix="/planta", tags=["Planta de tratamiento"])
 
 _LECTORES = ["admin", "operario"]
 _ESCRITORES = ["admin", "operario"]
-# CRUD de parámetros: solo admin (el operario no puede crearlos ni editarlos).
+# CRUD de parámetros y catálogo del diagrama: solo admin
+# (el operario solo registra estados y notas).
 _SOLO_ADMIN = ["admin"]
+
+
+# ----------------------------- Estado de la planta ---------------------------
+@router.get(
+    "/componentes",
+    response_model=list[ComponentePlantaOut],
+    summary="Listar partes de la planta con su estado actual",
+)
+def listar_componentes(
+    incluir_inactivos: bool = Query(
+        default=False,
+        description="Solo admin: incluye partes inactivas para configurarlas",
+    ),
+    db: Session = Depends(get_db),
+    usuario: models.Usuario = Depends(require_role(_LECTORES)),
+):
+    if incluir_inactivos and usuario.rol.nombre != "admin":
+        raise HTTPException(403, "Solo el administrador puede ver partes inactivas")
+    return svc_planta.componentes_con_estado_actual(db, incluir_inactivos=incluir_inactivos)
+
+
+@router.post(
+    "/componentes",
+    response_model=ComponentePlantaOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Crear parte de la planta",
+)
+def crear_componente(
+    payload: ComponentePlantaCreate,
+    db: Session = Depends(get_db),
+    usuario: models.Usuario = Depends(require_role(_SOLO_ADMIN)),
+):
+    componente = svc_planta.crear_componente(db, payload, usuario)
+    return svc_planta.componente_con_estado_actual(db, componente.id)
+
+
+@router.patch(
+    "/componentes/orden",
+    response_model=list[ComponentePlantaOut],
+    summary="Reordenar las partes del diagrama",
+)
+def reordenar_componentes(
+    payload: ComponentesOrdenUpdate,
+    db: Session = Depends(get_db),
+    usuario: models.Usuario = Depends(require_role(_SOLO_ADMIN)),
+):
+    return svc_planta.reordenar_componentes(db, payload.ids, usuario)
+
+
+@router.patch(
+    "/componentes/{cid}",
+    response_model=ComponentePlantaOut,
+    summary="Editar o activar/desactivar una parte de la planta",
+)
+def actualizar_componente(
+    cid: int,
+    payload: ComponentePlantaUpdate,
+    db: Session = Depends(get_db),
+    usuario: models.Usuario = Depends(require_role(_SOLO_ADMIN)),
+):
+    componente = db.get(models.ComponentePlanta, cid)
+    if not componente:
+        raise HTTPException(404, "Parte de la planta no encontrada")
+    svc_planta.actualizar_componente(db, componente, payload, usuario)
+    return svc_planta.componente_con_estado_actual(db, cid)
+
+
+@router.post(
+    "/componentes/{cid}/estado",
+    response_model=EstadoComponenteOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Registrar cambio de estado de una parte de la planta",
+)
+def registrar_estado_componente(
+    cid: int,
+    payload: EstadoComponenteCreate,
+    db: Session = Depends(get_db),
+    usuario: models.Usuario = Depends(require_role(_ESCRITORES)),
+):
+    componente = db.get(models.ComponentePlanta, cid)
+    if not componente:
+        raise HTTPException(404, "Parte de la planta no encontrada")
+    return svc_planta.registrar_estado_componente(db, componente, payload, usuario)
+
+
+@router.get(
+    "/estados",
+    response_model=EstadosComponentePagina,
+    summary="Historial de estados de la planta (paginado)",
+)
+def listar_estados_componente(
+    componente_id: int | None = None,
+    estado: models.EstadoOperativoComponente | None = None,
+    fecha_inicio: date | None = None,
+    fecha_fin: date | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    orden: str | None = Query(default=None, description="Campo de orden (whitelist del servicio)"),
+    dir_orden: str = Query(default="desc", pattern="^(asc|desc)$"),
+    db: Session = Depends(get_db),
+    _: models.Usuario = Depends(require_role(_LECTORES)),
+):
+    items, total = svc_planta.filtrar_estados_componente(
+        db, componente_id=componente_id, estado=estado,
+        fecha_inicio=fecha_inicio, fecha_fin=fecha_fin,
+        page=page, page_size=page_size, orden=orden, dir_orden=dir_orden,
+    )
+    return como_pagina(items, total, page, page_size)
 
 
 # ----------------------------- Parámetros ------------------------------------

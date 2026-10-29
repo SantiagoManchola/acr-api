@@ -98,6 +98,8 @@ ETIQUETAS = {
     "observaciones": "Observaciones",
     "responsable": "Responsable",
     "horas": "Horas",
+    "componente": "Componente",
+    "nota": "Nota",
 }
 
 

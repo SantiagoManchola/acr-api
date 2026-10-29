@@ -1,9 +1,9 @@
-"""Router de reportes con exportación CSV/XLSX/PDF (RF-20, RF-36, RF-54).
+"""Router de reportes con exportación CSV/XLSX/PDF (RF-20, RF-36, RF-54, RF-56).
 
 Cada módulo expone su propio reporte filtrable:
   /reportes/inventario?tipo=elementos|quimicos
   /reportes/micromedidores?tipo=lecturas|suscriptores|micromedidores
-  /reportes/planta?tipo=mediciones|actividades|dosificaciones|horas|quimicos
+  /reportes/planta?tipo=mediciones|actividades|dosificaciones|horas|quimicos|estado-actual|historial-estados
 Todos aceptan `formato` (csv|xlsx|pdf, por defecto csv) y los filtros del módulo.
 """
 from decimal import Decimal
@@ -25,7 +25,9 @@ router = APIRouter(prefix="/reportes", tags=["Reportes"])
 # - planta: admin + operario (el administrativo NO tiene acceso a planta)
 _LECTORES_INV = ["admin", "administrativo", "operario"]
 _LECTORES_MM = ["admin", "administrativo", "fontanero"]
-_LECTORES_PLANTA = ["admin", "operario"]
+# Los reportes de planta son solo del admin; el operario registra la operación
+# y consulta el historial de estados, pero no genera reportes.
+_LECTORES_PLANTA = ["admin"]
 
 # Nombres de mes para la matriz anual del reporte de micromedidores
 # (Lectura Enero / Consumo Enero / …, índice 1 = Enero).
@@ -268,17 +270,73 @@ def reporte_micromedidores(
 
 
 # ----------------------------- PLANTA ----------------------------------------
+ESTADOS_PLANTA_LABEL = {
+    models.EstadoOperativoComponente.funcionando.value: "En funcionamiento",
+    models.EstadoOperativoComponente.afectacion.value: "Afectación",
+    models.EstadoOperativoComponente.fuera_servicio.value: "Fuera de funcionamiento",
+}
+
+
+def _estado_planta_label(valor) -> str:
+    if valor is None:
+        return "Sin reportar"
+    if hasattr(valor, "value"):
+        valor = valor.value
+    return ESTADOS_PLANTA_LABEL.get(str(valor), str(valor))
+
+
 @router.get("/planta")
 def reporte_planta(
     tipo: str = Query(default="mediciones"),
     parametro_id: int | None = None,
     fuera_rango: bool | None = None,
     elemento_id: int | None = None,
+    componente_id: int | None = None,
+    estado: models.EstadoOperativoComponente | None = None,
     fecha_inicio: str | None = None,
     fecha_fin: str | None = None,
     formato: str = Query(default="csv"),
     db=Depends(get_db), _=Depends(require_role(_LECTORES_PLANTA)),
 ):
+    if tipo == "estado-actual":
+        componentes = svc_planta.componentes_con_estado_actual(db)
+        if componente_id:
+            componentes = [c for c in componentes if c["id"] == componente_id]
+        if estado is not None:
+            componentes = [c for c in componentes if c["estado_actual"] == estado]
+        datos = [{
+            "componente": c["nombre"],
+            "estado": _estado_planta_label(c["estado_actual"]),
+            "nota": c["nota_actual"] or "",
+            "fecha": c["fecha_actualizacion"],
+            "hora": c["hora_actualizacion"],
+            "responsable": c["responsable_nombre"] or "—",
+        } for c in componentes]
+        columnas = ["componente", "estado", "nota", "fecha", "hora", "responsable"]
+        return _responder(
+            datos, columnas, formato, "reporte_estado_planta",
+            "Estado actual de la planta ACR",
+        )
+
+    if tipo == "historial-estados":
+        filas, _ = svc_planta.filtrar_estados_componente(
+            db, componente_id=componente_id, estado=estado,
+            fecha_inicio=fecha_inicio, fecha_fin=fecha_fin,
+        )
+        datos = [{
+            "fecha": e["fecha"],
+            "hora": e["hora"],
+            "componente": e["componente_nombre"],
+            "estado": _estado_planta_label(e["estado"]),
+            "nota": e["nota"] or "",
+            "responsable": e["responsable_nombre"] or "—",
+        } for e in filas]
+        columnas = ["fecha", "hora", "componente", "estado", "nota", "responsable"]
+        return _responder(
+            datos, columnas, formato, "reporte_historial_estado_planta",
+            "Historial de estados de la planta ACR",
+        )
+
     if tipo == "quimicos":
         # Químicos = elementos de inventario de categoría tipo 'insumo' y nombre "Químicos".
         stmt = select(models.ElementoInventario).join(

@@ -1,13 +1,14 @@
-"""Lógica de planta: detección de valores fuera de rango (RF-48/RF-49)."""
+"""Lógica de planta: valores fuera de rango (RF-48/RF-49) y estado operativo
+del diagrama por partes (RF-55/RF-56)."""
 from datetime import date
 from decimal import Decimal
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import models
-from .common import aplicar_paginacion, orden_validado
+from .common import ahora_colombia, aplicar_paginacion, hoy_colombia, orden_validado, sellar
 
 
 def fuera_de_rango(parametro: models.ParametroPlanta, valor: Decimal) -> bool:
@@ -275,5 +276,283 @@ def filtrar_horas(db: Session, *, fecha_inicio=None, fecha_fin=None,
         {**{c.name: getattr(h, c.name) for c in models.HoraServicio.__table__.columns},
          "responsable_nombre": nombre}
         for (h, nombre) in filas
+    ]
+    return items, total
+
+
+# ----------------------------- Estado operativo de la planta -----------------
+def _ultimo_estado_subquery():
+    """Id del último evento de cada componente (el estado actual)."""
+    return (
+        select(
+            models.EstadoComponentePlanta.componente_id.label("componente_id"),
+            func.max(models.EstadoComponentePlanta.id).label("ultimo_id"),
+        )
+        .group_by(models.EstadoComponentePlanta.componente_id)
+        .subquery()
+    )
+
+
+def _stmt_componentes(incluir_inactivos: bool = False):
+    ultimo = _ultimo_estado_subquery()
+    stmt = (
+        select(models.ComponentePlanta, models.EstadoComponentePlanta, models.Usuario.nombre)
+        .outerjoin(ultimo, ultimo.c.componente_id == models.ComponentePlanta.id)
+        .outerjoin(
+            models.EstadoComponentePlanta,
+            models.EstadoComponentePlanta.id == ultimo.c.ultimo_id,
+        )
+        .outerjoin(
+            models.Usuario,
+            models.EstadoComponentePlanta.responsable_id == models.Usuario.id,
+        )
+    )
+    if not incluir_inactivos:
+        stmt = stmt.where(models.ComponentePlanta.estado == models.EstadoRegistro.activo)
+    return stmt.order_by(models.ComponentePlanta.orden, models.ComponentePlanta.nombre)
+
+
+def _componente_dict(componente, estado, responsable_nombre):
+    if estado is None:
+        # Compatibilidad con componentes creados antes de existir el historial:
+        # se asume funcionando, tal como se definió para el arranque.
+        fecha = componente.created_at.date() if componente.created_at else None
+        hora = componente.created_at.time().replace(microsecond=0) if componente.created_at else None
+        estado_actual = models.EstadoOperativoComponente.funcionando
+        nota_actual = "Estado inicial"
+        responsable_id = None
+        responsable_nombre = None
+    else:
+        fecha = estado.fecha
+        hora = estado.hora
+        estado_actual = estado.estado
+        nota_actual = estado.nota
+        responsable_id = estado.responsable_id
+    return {
+        "id": componente.id,
+        "nombre": componente.nombre,
+        "descripcion": componente.descripcion,
+        "orden": componente.orden,
+        "estado": componente.estado,
+        "estado_actual": estado_actual,
+        "nota_actual": nota_actual,
+        "fecha_actualizacion": fecha,
+        "hora_actualizacion": hora,
+        "responsable_id": responsable_id,
+        "responsable_nombre": responsable_nombre,
+    }
+
+
+def componentes_con_estado_actual(db: Session, incluir_inactivos: bool = False):
+    filas = db.execute(_stmt_componentes(incluir_inactivos)).all()
+    return [_componente_dict(c, e, resp) for (c, e, resp) in filas]
+
+
+def componente_con_estado_actual(db: Session, componente_id: int, incluir_inactivo: bool = True):
+    stmt = _stmt_componentes(incluir_inactivo).where(models.ComponentePlanta.id == componente_id)
+    fila = db.execute(stmt).first()
+    if not fila:
+        return None
+    componente, estado, responsable = fila
+    return _componente_dict(componente, estado, responsable)
+
+
+def _texto_limpio(valor: str | None) -> str | None:
+    if valor is None:
+        return None
+    texto = str(valor).strip()
+    return texto or None
+
+
+def _validar_nombre_componente(db: Session, nombre: str, excluir_id: int | None = None) -> str:
+    nombre = _texto_limpio(nombre)
+    if not nombre:
+        raise HTTPException(400, "El nombre de la parte es obligatorio")
+    stmt = select(models.ComponentePlanta).where(
+        func.lower(models.ComponentePlanta.nombre) == nombre.lower()
+    )
+    if excluir_id is not None:
+        stmt = stmt.where(models.ComponentePlanta.id != excluir_id)
+    if db.execute(stmt).scalars().first():
+        raise HTTPException(400, "Ya existe una parte de la planta con ese nombre")
+    return nombre
+
+
+def _ultimo_estado(db: Session, componente_id: int):
+    return db.execute(
+        select(models.EstadoComponentePlanta)
+        .where(models.EstadoComponentePlanta.componente_id == componente_id)
+        .order_by(models.EstadoComponentePlanta.id.desc())
+        .limit(1)
+    ).scalars().first()
+
+
+def _asegurar_estado_inicial(db: Session, componente, usuario):
+    """Crea el evento inicial 'funcionando' si la parte aún no tiene historial."""
+    if componente.estado != models.EstadoRegistro.activo:
+        return
+    if _ultimo_estado(db, componente.id) is not None:
+        return
+    evento = models.EstadoComponentePlanta(
+        componente_id=componente.id,
+        estado=models.EstadoOperativoComponente.funcionando,
+        nota="Estado inicial",
+        fecha=hoy_colombia(),
+        hora=ahora_colombia().time().replace(microsecond=0),
+        responsable_id=usuario.id,
+    )
+    sellar(evento, usuario, nuevo=True)
+    db.add(evento)
+
+
+def crear_componente(db: Session, payload, usuario):
+    nombre = _validar_nombre_componente(db, payload.nombre)
+    orden = payload.orden
+    if orden is None:
+        max_orden = db.execute(select(func.max(models.ComponentePlanta.orden))).scalar()
+        orden = int(max_orden or 0) + 1
+    componente = models.ComponentePlanta(
+        nombre=nombre,
+        descripcion=_texto_limpio(payload.descripcion),
+        orden=orden,
+        estado=models.EstadoRegistro.activo,
+    )
+    sellar(componente, usuario, nuevo=True)
+    db.add(componente)
+    db.flush()
+    _asegurar_estado_inicial(db, componente, usuario)
+    db.commit()
+    db.refresh(componente)
+    return componente
+
+
+def actualizar_componente(db: Session, componente, payload, usuario):
+    datos = payload.model_dump(exclude_unset=True)
+    if "nombre" in datos:
+        if datos["nombre"] is None:
+            raise HTTPException(400, "El nombre de la parte es obligatorio")
+        datos["nombre"] = _validar_nombre_componente(db, datos["nombre"], excluir_id=componente.id)
+    if "descripcion" in datos:
+        datos["descripcion"] = _texto_limpio(datos["descripcion"])
+    for campo, valor in datos.items():
+        if campo == "orden" and valor is None:
+            continue
+        if campo == "estado" and valor is None:
+            continue
+        setattr(componente, campo, valor)
+    sellar(componente, usuario, nuevo=False)
+    if componente.estado == models.EstadoRegistro.activo:
+        _asegurar_estado_inicial(db, componente, usuario)
+    db.commit()
+    db.refresh(componente)
+    return componente
+
+
+def reordenar_componentes(db: Session, ids: list[int], usuario):
+    if len(ids) != len(set(ids)):
+        raise HTTPException(400, "La lista de partes contiene ids repetidos")
+    componentes = db.execute(
+        select(models.ComponentePlanta).where(models.ComponentePlanta.id.in_(ids))
+    ).scalars().all()
+    if len(componentes) != len(ids):
+        raise HTTPException(400, "Una o más partes no existen")
+    por_id = {c.id: c for c in componentes}
+    for posicion, componente_id in enumerate(ids, start=1):
+        componente = por_id[componente_id]
+        componente.orden = posicion
+        sellar(componente, usuario, nuevo=False)
+    db.commit()
+    return componentes_con_estado_actual(db, incluir_inactivos=True)
+
+
+def registrar_estado_componente(db: Session, componente, payload, usuario):
+    if componente.estado != models.EstadoRegistro.activo:
+        raise HTTPException(400, "La parte está inactiva; actívela antes de cambiar su estado")
+    nota = _texto_limpio(payload.nota)
+    if payload.estado != models.EstadoOperativoComponente.funcionando and not nota:
+        raise HTTPException(
+            400,
+            "La nota es obligatoria cuando el estado es Afectación o Fuera de funcionamiento",
+        )
+    ultimo = _ultimo_estado(db, componente.id)
+    if ultimo is not None and ultimo.estado == payload.estado and not nota:
+        raise HTTPException(400, "Seleccione un estado diferente o agregue una nota")
+
+    evento = models.EstadoComponentePlanta(
+        componente_id=componente.id,
+        estado=payload.estado,
+        nota=nota,
+        fecha=hoy_colombia(),
+        hora=ahora_colombia().time().replace(microsecond=0),
+        responsable_id=usuario.id,
+    )
+    sellar(evento, usuario, nuevo=True)
+    db.add(evento)
+    db.commit()
+    db.refresh(evento)
+    return {
+        "id": evento.id,
+        "componente_id": componente.id,
+        "componente_nombre": componente.nombre,
+        "estado": evento.estado,
+        "nota": evento.nota,
+        "fecha": evento.fecha,
+        "hora": evento.hora,
+        "responsable_id": evento.responsable_id,
+        "responsable_nombre": usuario.nombre,
+        "created_at": evento.created_at,
+    }
+
+
+def filtrar_estados_componente(db: Session, *, componente_id=None, estado=None,
+                               fecha_inicio=None, fecha_fin=None,
+                               page: int | None = None, page_size: int = 20,
+                               orden: str | None = None, dir_orden: str | None = None):
+    stmt = (
+        select(
+            models.EstadoComponentePlanta,
+            models.ComponentePlanta.nombre,
+            models.Usuario.nombre,
+        )
+        .join(
+            models.ComponentePlanta,
+            models.EstadoComponentePlanta.componente_id == models.ComponentePlanta.id,
+        )
+        .outerjoin(
+            models.Usuario,
+            models.EstadoComponentePlanta.responsable_id == models.Usuario.id,
+        )
+    )
+    if componente_id:
+        stmt = stmt.where(models.EstadoComponentePlanta.componente_id == componente_id)
+    if estado is not None:
+        stmt = stmt.where(models.EstadoComponentePlanta.estado == estado)
+    stmt = _rango_fechas(stmt, models.EstadoComponentePlanta, fecha_inicio, fecha_fin)
+
+    permitidos = {
+        "fecha": models.EstadoComponentePlanta.fecha,
+        "hora": models.EstadoComponentePlanta.hora,
+        "componente": models.ComponentePlanta.nombre,
+        "estado": models.EstadoComponentePlanta.estado,
+        "responsable": models.Usuario.nombre,
+        "nota": models.EstadoComponentePlanta.nota,
+    }
+    por_defecto = lambda s: s.order_by(
+        models.EstadoComponentePlanta.fecha.desc(),
+        models.EstadoComponentePlanta.hora.desc(),
+        models.EstadoComponentePlanta.id.desc(),
+    )
+    ordenar = orden_validado(
+        orden, dir_orden, permitidos, por_defecto,
+        desempate=models.EstadoComponentePlanta.id.desc(),
+    )
+    filas, total = aplicar_paginacion(db, stmt, ordenar, page, page_size, many=True)
+    items = [
+        {
+            **{c.name: getattr(e, c.name) for c in models.EstadoComponentePlanta.__table__.columns},
+            "componente_nombre": componente_nombre,
+            "responsable_nombre": responsable_nombre,
+        }
+        for (e, componente_nombre, responsable_nombre) in filas
     ]
     return items, total

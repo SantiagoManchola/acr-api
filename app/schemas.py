@@ -9,6 +9,7 @@ from .config import settings
 from .models import (
     CategoriaTipo,
     CondicionMedidor,
+    EstadoOperativoComponente,
     EstadoRegistro,
     TipoAgua,
     TipoMovimiento,
@@ -568,6 +569,60 @@ class HoraServicioOut(_ORM):
     observaciones: Optional[str] = None
 
 
+# ----------------------------- Estado operativo de la planta -----------------
+class ComponentePlantaCreate(BaseModel):
+    nombre: str = Field(min_length=1, max_length=100)
+    descripcion: Optional[str] = Field(default=None, max_length=255)
+    # Si se omite, la parte se agrega al final del diagrama.
+    orden: Optional[int] = Field(default=None, ge=0)
+
+
+class ComponentePlantaUpdate(BaseModel):
+    nombre: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    descripcion: Optional[str] = Field(default=None, max_length=255)
+    orden: Optional[int] = Field(default=None, ge=0)
+    estado: Optional[EstadoRegistro] = None
+
+
+class ComponentesOrdenUpdate(BaseModel):
+    """Reordena el diagrama con la lista de ids en el orden deseado."""
+
+    ids: List[int] = Field(min_length=1)
+
+
+class ComponentePlantaOut(_ORM):
+    id: int
+    nombre: str
+    descripcion: Optional[str] = None
+    orden: int
+    estado: EstadoRegistro
+    estado_actual: Optional[EstadoOperativoComponente] = None
+    nota_actual: Optional[str] = None
+    fecha_actualizacion: Optional[date] = None
+    hora_actualizacion: Optional[time] = None
+    responsable_id: Optional[int] = None
+    responsable_nombre: Optional[str] = None
+
+
+class EstadoComponenteCreate(BaseModel):
+    estado: EstadoOperativoComponente
+    # Obligatoria para afectación / fuera de servicio (se valida en el servicio).
+    nota: Optional[str] = Field(default=None, max_length=2000)
+
+
+class EstadoComponenteOut(_ORM):
+    id: int
+    componente_id: int
+    componente_nombre: Optional[str] = None
+    estado: EstadoOperativoComponente
+    nota: Optional[str] = None
+    fecha: date
+    hora: Optional[time] = None
+    responsable_id: Optional[int] = None
+    responsable_nombre: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+
 # ----------------------------- Páginas de listado -----------------------------
 class MedicionesPagina(Paginacion[MedicionOut]):
     pass
@@ -582,6 +637,10 @@ class DosificacionesPagina(Paginacion[DosificacionOut]):
 
 
 class HorasPagina(Paginacion[HoraServicioOut]):
+    pass
+
+
+class EstadosComponentePagina(Paginacion[EstadoComponenteOut]):
     pass
 
 
