@@ -182,9 +182,13 @@ def listar_micromedidores(
     summary="Micromedidores ligeros para selects/filtros",
 )
 def opciones_micromedidores(
+    solo_activos: bool = Query(
+        default=True,
+        description="Solo medidores activos (por defecto). Use false para incluir inactivos.",
+    ),
     db: Session = Depends(get_db), _: models.Usuario = Depends(require_role(_LECTORES))
 ):
-    return svc_mm.opciones_micromedidores(db)
+    return svc_mm.opciones_micromedidores(db, solo_activos=solo_activos)
 
 
 @router.post(

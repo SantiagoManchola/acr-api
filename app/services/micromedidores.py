@@ -330,13 +330,16 @@ def matriz_mensual_lecturas(db: Session, anio: int | None = None) -> dict:
     return {"anio": anio, "meses": list(range(1, 13)), "por_medidor": dict(por_medidor)}
 
 
-def opciones_micromedidores(db: Session):
+def opciones_micromedidores(db: Session, solo_activos: bool = True):
     """Lista ligera para selects y para el buscador único del fontanero.
 
     Incluye el nombre del suscriptor y la dirección: el buscador permite
     encontrar el medidor por nombre, dirección o serial en un solo campo.
+
+    Por defecto solo devuelve medidores ACTIVOS: un medidor inactivado
+    (p. ej. al reemplazarlo) no debe ofrecerse para registrar lecturas.
     """
-    return db.execute(
+    stmt = (
         select(
             models.Micromedidor.id,
             models.Micromedidor.serial,
@@ -346,7 +349,11 @@ def opciones_micromedidores(db: Session):
             models.Micromedidor.estado,
         )
         .outerjoin(models.Suscriptor, models.Micromedidor.suscriptor_id == models.Suscriptor.id)
-        .order_by(models.Suscriptor.nombre, models.Micromedidor.serial)
+    )
+    if solo_activos:
+        stmt = stmt.where(models.Micromedidor.estado == models.EstadoRegistro.activo)
+    return db.execute(
+        stmt.order_by(models.Suscriptor.nombre, models.Micromedidor.serial)
     ).all()
 
 
