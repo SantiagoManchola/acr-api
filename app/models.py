@@ -1,4 +1,4 @@
-"""Modelos SQLAlchemy para las 21 tablas de ACR (mysql+pymysql).
+"""Modelos SQLAlchemy para las 22 tablas de ACR (mysql+pymysql).
 
 Tipos/ENUMs y FKs respetan `datamodel/migrations/acr_migrations.sql`.
 Incluye trazabilidad (created_by/updated_by, created_at/updated_at) y soft
@@ -306,6 +306,34 @@ class Lectura(Base):
     irregular = Column(Boolean, nullable=False, server_default="0")
     # Evidencia fotográfica opcional (URL pública en R2).
     foto_url = Column(String(500))
+    created_by = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"))
+    updated_by = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"))
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
+
+
+class ReasignacionMicromedidor(Base):
+    """Auditoría de correcciones de asignación suscriptor-medidor.
+
+    Cada fila registra el cambio completo: quién lo hizo, de qué suscriptor a
+    cuál, cuántas lecturas se movieron y el motivo opcional. Es un historial
+    inmutable: no se actualiza ni se elimina desde la aplicación.
+    """
+
+    __tablename__ = "reasignaciones_micromedidor"
+
+    id = Column(Integer, primary_key=True)
+    micromedidor_id = Column(
+        Integer, ForeignKey("micromedidores.id", ondelete="RESTRICT"), nullable=False
+    )
+    suscriptor_anterior_id = Column(
+        Integer, ForeignKey("suscriptores.id", ondelete="RESTRICT")
+    )
+    suscriptor_nuevo_id = Column(
+        Integer, ForeignKey("suscriptores.id", ondelete="RESTRICT")
+    )
+    lecturas_movidas = Column(Integer, nullable=False, server_default="0")
+    motivo = Column(String(255))
     created_by = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"))
     updated_by = Column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"))
     created_at = Column(DateTime, nullable=False, server_default=func.now())

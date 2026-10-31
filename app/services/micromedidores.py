@@ -10,11 +10,11 @@ from datetime import date, time as dtime
 from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import HTTPException, status
-from sqlalchemy import extract, func, or_, select
+from sqlalchemy import extract, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from .. import models
-from .common import aplicar_paginacion, condiciones_busqueda, hoy_colombia, orden_validado
+from .common import aplicar_paginacion, condiciones_busqueda, hoy_colombia, orden_validado, sellar
 
 
 def _entero(v) -> int:
@@ -578,3 +578,72 @@ def historial_micromedidor(db: Session, mid: int):
         "promedio_base_n": min(int(consumos_validos or 0), 6),
         "promedio_total_lecturas": int(consumos_validos or 0),
     }
+
+
+def reasignar_suscriptor(
+    db: Session,
+    micromedidor: models.Micromedidor,
+    nuevo_suscriptor_id: int | None,
+    motivo: str | None,
+    usuario: models.Usuario,
+) -> int:
+    """Corrige la asignación de un medidor y mueve TODAS sus lecturas.
+
+    Es una corrección de datos, no un traslado: las lecturas existentes se
+    reasignan al nuevo suscriptor (nunca se borran) para que el histórico,
+    los reportes y la facturación queden consistentes. El medidor debe venir
+    bloqueado por el router (`SELECT ... FOR UPDATE`).
+
+    Devuelve cuántas lecturas se movieron. Si el suscriptor no cambia, no
+    escribe auditoría y devuelve 0.
+    """
+    anterior_id = micromedidor.suscriptor_id
+    if nuevo_suscriptor_id == anterior_id:
+        return 0
+
+    if nuevo_suscriptor_id is not None:
+        nuevo = db.get(models.Suscriptor, nuevo_suscriptor_id)
+        if not nuevo:
+            raise HTTPException(400, "suscriptor_id inválido")
+        if nuevo.estado != models.EstadoRegistro.activo:
+            raise HTTPException(400, "El suscriptor está inactivo: no se puede asignar")
+
+    total_lecturas = db.execute(
+        select(func.count(models.Lectura.id)).where(
+            models.Lectura.micromedidor_id == micromedidor.id
+        )
+    ).scalar_one()
+
+    if nuevo_suscriptor_id is None and total_lecturas:
+        raise HTTPException(
+            400,
+            "No se puede dejar sin suscriptor un medidor con lecturas. "
+            "Asignalo a un suscriptor: las lecturas no se borran.",
+        )
+
+    if total_lecturas and nuevo_suscriptor_id is not None:
+        db.execute(
+            update(models.Lectura)
+            .where(models.Lectura.micromedidor_id == micromedidor.id)
+            .values(
+                suscriptor_id=nuevo_suscriptor_id,
+                updated_by=usuario.id,
+                updated_at=func.now(),
+            )
+        )
+
+    micromedidor.suscriptor_id = nuevo_suscriptor_id
+
+    auditoria = models.ReasignacionMicromedidor(
+        micromedidor_id=micromedidor.id,
+        suscriptor_anterior_id=anterior_id,
+        suscriptor_nuevo_id=nuevo_suscriptor_id,
+        lecturas_movidas=total_lecturas,
+        motivo=(motivo or "").strip() or None,
+    )
+    sellar(auditoria, usuario, nuevo=True)
+    db.add(auditoria)
+    # Fuerza el INSERT dentro de la misma transacción: si la auditoría falla,
+    # no se confirma el cambio del medidor ni el de las lecturas.
+    db.flush()
+    return total_lecturas

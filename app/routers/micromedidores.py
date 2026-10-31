@@ -202,8 +202,12 @@ def crear_micromedidor(
     db: Session = Depends(get_db),
     usuario: models.Usuario = Depends(require_role(_ESCRITORES)),
 ):
-    if payload.suscriptor_id and not db.get(models.Suscriptor, payload.suscriptor_id):
-        raise HTTPException(400, "suscriptor_id inválido")
+    if payload.suscriptor_id is not None:
+        suscriptor = db.get(models.Suscriptor, payload.suscriptor_id)
+        if not suscriptor:
+            raise HTTPException(400, "suscriptor_id inválido")
+        if suscriptor.estado != models.EstadoRegistro.activo:
+            raise HTTPException(400, "El suscriptor está inactivo: no se puede asignar")
     mm = models.Micromedidor(**payload.model_dump())
     sellar(mm, usuario, nuevo=True)
     db.add(mm)
@@ -229,18 +233,38 @@ def historial_micromedidor(
     return svc_mm.historial_micromedidor(db, mid)
 
 
-@router.patch("/micromedidores/{mid}", response_model=MicromedidorOut, summary="Actualizar micromedidor")
+@router.patch(
+    "/micromedidores/{mid}",
+    response_model=MicromedidorOut,
+    summary="Actualizar micromedidor (si cambia el suscriptor, reasigna sus lecturas)",
+)
 def actualizar_micromedidor(
     mid: int,
     payload: MicromedidorUpdate,
     db: Session = Depends(get_db),
     usuario: models.Usuario = Depends(require_role(_ESCRITORES)),
 ):
-    mm = db.get(models.Micromedidor, mid)
+    """Actualiza el medidor. Si cambia `suscriptor_id`, mueve TODAS sus lecturas
+    al nuevo suscriptor (no las borra) y registra la auditoría en
+    `reasignaciones_micromedidor`. Solo admin/administrativo."""
+    # Bloquea la fila: una reasignación mueve también las lecturas y no debe
+    # cruzarse con otra edición ni con la toma de una lectura del mismo medidor.
+    mm = db.execute(
+        select(models.Micromedidor)
+        .where(models.Micromedidor.id == mid)
+        .with_for_update()
+    ).scalar_one_or_none()
     if not mm:
         raise HTTPException(404, "Micromedidor no encontrado")
     condicion_anterior = mm.condicion
-    for k, v in payload.model_dump(exclude_unset=True).items():
+    datos = payload.model_dump(exclude_unset=True)
+    motivo_reasignacion = datos.pop("motivo_reasignacion", None)
+    if "suscriptor_id" in datos:
+        nuevo_suscriptor_id = datos.pop("suscriptor_id")
+        svc_mm.reasignar_suscriptor(
+            db, mm, nuevo_suscriptor_id, motivo_reasignacion, usuario
+        )
+    for k, v in datos.items():
         setattr(mm, k, v)
     # Corte de frenado: al marcar manualmente el medidor como 'bueno' se guarda
     # el id de su última lectura; la detección automática solo contará lecturas
@@ -285,13 +309,30 @@ def crear_lectura(
     db: Session = Depends(get_db),
     usuario: models.Usuario = Depends(require_role(_TOMADORES_LECTURA)),
 ):
-    micromedidor = db.get(models.Micromedidor, payload.micromedidor_id)
+    # Bloquea el medidor hasta hacer commit: si el admin lo reasigna en ese
+    # intervalo, la lectura espera y se guarda con el suscriptor definitivo.
+    micromedidor = db.execute(
+        select(models.Micromedidor)
+        .where(models.Micromedidor.id == payload.micromedidor_id)
+        .with_for_update()
+    ).scalar_one_or_none()
     if not micromedidor:
         raise HTTPException(400, "micromedidor_id inválido")
     if micromedidor.estado == models.EstadoRegistro.inactivo:
         raise HTTPException(400, "El micromedidor está inactivo: no se pueden registrar lecturas")
     if not db.get(models.Suscriptor, payload.suscriptor_id):
         raise HTTPException(400, "suscriptor_id inválido")
+    # El formulario pudo quedar abierto antes de una reasignación: no se debe
+    # registrar la lectura a nombre del suscriptor anterior.
+    if (
+        micromedidor.suscriptor_id is not None
+        and payload.suscriptor_id != micromedidor.suscriptor_id
+    ):
+        raise HTTPException(
+            400,
+            "El medidor fue reasignado a otro suscriptor. "
+            "Actualizá la selección y volvé a registrar la lectura.",
+        )
 
     estimada = bool(payload.irregular)
     if estimada and payload.lectura is not None:

@@ -320,6 +320,9 @@ class MicromedidorUpdate(BaseModel):
     fecha_instalacion: Optional[date] = None
     condicion: Optional[CondicionMedidor] = None
     estado: Optional[EstadoRegistro] = None
+    # Solo se usa cuando cambia `suscriptor_id`: queda en la auditoría de la
+    # reasignación, no es una columna de `micromedidores`.
+    motivo_reasignacion: Optional[str] = Field(default=None, max_length=255)
 
 
 class MicromedidorOut(_ORM):

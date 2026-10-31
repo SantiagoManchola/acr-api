@@ -20,6 +20,11 @@ FLUSH PRIVILEGES;
 mysql -u acr_user -p acr < ../datamodel/migrations/acr_migrations.sql
 ```
 
+> Si la base **ya existe**, aplicá las migraciones incrementales pendientes en
+> `datamodel/migrations/` (por ejemplo, `acr_migrations_011_reasignacion_micromedidor.sql`
+> para habilitar la corrección de suscriptor de un medidor). El archivo consolidado
+> `acr_migrations.sql` ya incluye todas las tablas para instalaciones nuevas.
+>
 > La variable `DATABASE_URL` (en `.env`) debe apuntar a esa BD:
 > `mysql+pymysql://acr_user:acr_password@localhost:3306/acr`
 
@@ -69,7 +74,7 @@ api/
     main.py          # FastAPI app + CORS + routers
     config.py        # settings (pydantic-settings, desde .env)
     db.py            # engine / SessionLocal / Base
-    models.py        # 21 tablas SQLAlchemy (MySQL)
+    models.py        # 22 tablas SQLAlchemy (MySQL)
     schemas.py       # Pydantic v2
     security.py      # JWT, bcrypt, get_current_user, require_role
     routers/         # auth, usuarios, inventario, micromedidores, planta, reportes
@@ -89,7 +94,10 @@ api/
   `GET /inventario/movimientos`, `GET /inventario/alertas`.
 - **Micromedidores:** `GET/POST /suscriptores`, `GET/POST /micromedidores`,
   `POST /lecturas` (calcula consumo/promedio), `GET /lecturas`,
-  `GET /consumo/sector/{sector}`.
+  `GET /consumo/sector/{sector}`. `PATCH /micromedidores/{id}` acepta
+  `suscriptor_id` para corregir la asignación (admin/administrativo): mueve
+  las lecturas del medidor al nuevo suscriptor y registra la auditoría en
+  `reasignaciones_micromedidor`.
 - **Planta:** `GET/POST /planta/parametros`, `POST /planta/mediciones`
   (marca `fuera_rango`), `GET /planta/mediciones/fuera-rango`,
   `POST /planta/dosificaciones` (los químicos son insumos en `/inventario`),
